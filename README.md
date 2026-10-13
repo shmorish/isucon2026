@@ -3,6 +3,8 @@
 ISUCON 当日用テンプレート。repo は各サーバーの `/home/isucon` に置き、`.gitignore` のホワイトリストで必要なものだけ追跡する。
 
 ```
+CLAUDE.md             当日 Claude に守らせるルールと進め方
+notes/manual.md       マニュアルの要点 (仕様担当が当日記入。Claude が最優先で守る)
 Taskfile.yml          deploy / analyze / score などの当日コマンド (task --list で一覧)
 scripts/setup.sh      各サーバーで1回だけ実行 (alp, slp, pt-query-digest, task 等の導入)
 scripts/collect.sh    サーバーの状況 (スペック・サービス・nginx 設定・テーブル定義) を s1/collect.md にまとめる
