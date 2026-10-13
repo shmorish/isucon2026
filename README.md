@@ -22,8 +22,8 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `task get-conf` | 各サーバーで最初に1回（`/etc` の設定を repo に取り込む） |
 | `task collect` | 各サーバーで最初に1回（サーバーの状況を `s1/collect.md` に） |
 | `task deploy` | 変更を push した後、毎回 |
-| `task analyze` | ベンチの後、毎回（alp / slp / pt-query-digest を集計して Discord へ） |
-| `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（`~/scores.log` と Discord に記録） |
+| `task analyze` | ベンチの後、毎回（alp / slp / pt-query-digest を集計） |
+| `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
 
 ---
@@ -36,8 +36,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 4. 公開鍵を GitHub に登録する（`pbcopy < ~/.ssh/id_ed25519.pub` → https://github.com/settings/keys に貼る）。https://github.com/<ユーザー名>.keys に表示されれば登録済み
 5. 手元で `ssh -T git@github.com` を実行し、`Hi <ユーザー名>!` と出ることを確認する
 6. AWS アカウントを用意する（競技は各チームの AWS アカウントで EC2 を起動する）
-7. Discord の Webhook URL を手元のメモに控えておく（**repo にはコミットしない**）
-8. private-isu や過去問で、下の「当日の手順」を通しで練習する
+7. private-isu や過去問で、下の「当日の手順」を通しで練習する
 
 ---
 
@@ -228,12 +227,6 @@ curl -s localhost:6060/debug/pprof/ | head -3
 
 ### 7. 10:35〜10:45　計測付きベンチと共有（A + 全員）
 
-s1 で Discord の通知先を設定する（ログインするたびに必要）。
-
-```
-export DISCORD_WEBHOOK='https://discord.com/api/webhooks/...'
-```
-
 **ベンチの直前に**、別のターミナルで `ssh s1` して pprof の取得を始める（60秒間 CPU プロファイルを取る）。
 
 ```
@@ -247,7 +240,7 @@ task analyze
 task score S=<点数> M="計測あり"
 ```
 
-`task analyze` は alp・slp・pt-query-digest の結果をターミナルに出し、`/tmp/alp.txt`・`/tmp/slp.txt`・`/tmp/slow.txt` を Discord に送る。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
+`task analyze` は alp・slp・pt-query-digest の結果をターミナルに出し、`/tmp/alp.txt`・`/tmp/slp.txt`・`/tmp/slow.txt` にも保存する（Claude にはこのファイルを読ませる）。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
 
 ID を含む URL（`/api/user/123` など）が別々の行に分かれていたら、`scripts/alp.yml` の `matching_groups` に正規表現を書いて集計し直す。ログは次の `task deploy` まで残っているので、ベンチを回し直す必要はない。
 

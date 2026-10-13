@@ -72,12 +72,11 @@ tasks:
       - sudo truncate -s 0 {{.NGINX_LOG}} {{.SLOW_LOG}} 2>/dev/null || true
 
   analyze:
-    desc: ベンチ後に alp / slp / pt-query-digest を集計して通知
+    desc: ベンチ後に alp / slp / pt-query-digest を集計 (結果は /tmp/alp.txt, slp.txt, slow.txt にも残る)
     cmds:
       - task: alp
       - task: slp
       - task: slow
-      - task: notify
 
   alp:
     desc: アクセスログをエンドポイントごとに合計時間順で一覧
@@ -101,19 +100,8 @@ tasks:
     cmds:
       - go tool pprof -http=0.0.0.0:1080 "http://localhost:6060/debug/pprof/profile?seconds=60"
 
-  notify:
-    desc: DISCORD_WEBHOOK を環境変数で渡す (repo にコミットしない)
-    cmds:
-      - |
-        if [ -z "${DISCORD_WEBHOOK:-}" ]; then echo "DISCORD_WEBHOOK 未設定、通知スキップ"; exit 0; fi
-        files=""
-        if [ -f /tmp/alp.txt ]; then files="$files -F file1=@/tmp/alp.txt"; fi
-        if [ -f /tmp/slp.txt ]; then files="$files -F file2=@/tmp/slp.txt"; fi
-        if [ -f /tmp/slow.txt ]; then files="$files -F file3=@/tmp/slow.txt"; fi
-        curl -s -F "content={{.SERVER_ID}} $(git log -1 --format='%h %s')" $files "$DISCORD_WEBHOOK" >/dev/null
-
   score:
-    desc: 'ポータルで結果を見てから: task score S=12345 M="メモ" → ~/scores.log に追記して Discord に通知'
+    desc: 'ポータルで結果を見てから: task score S=12345 M="メモ" → ~/scores.log に追記'
     requires:
       vars: [S]
     cmds:
@@ -122,4 +110,3 @@ tasks:
         line="$(date +%H:%M) {{.SERVER_ID}} score={{.S}} $(git log -1 --format='%h %s') {{.M}}"
         echo "$line" >> ~/scores.log
         echo "$line"
-        if [ -n "${DISCORD_WEBHOOK:-}" ]; then curl -s -F "content=$line" "$DISCORD_WEBHOOK" >/dev/null; fi
