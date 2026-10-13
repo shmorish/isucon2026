@@ -6,6 +6,7 @@ ISUCON 当日用テンプレート。repo は各サーバーの `/home/isucon` �
 Taskfile.yml          deploy / analyze / score などの当日コマンド (task --list で一覧)
 scripts/setup.sh      各サーバーで1回だけ実行 (alp, slp, pt-query-digest, task 等の導入)
 scripts/collect.sh    サーバーの状況 (スペック・サービス・nginx 設定・テーブル定義) を s1/collect.md にまとめる
+scripts/monitor.sh    ベンチ中の CPU・メモリ (全体とプロセス別) を記録して要約する
 scripts/ssh-hosts.sh  手元の Mac で実行。当日のIPを渡すと ~/.ssh/config に s1〜s3 を書く
 scripts/alp.yml       alp の設定。当日 matching_groups を書く
 scripts/slp.yml       slp の設定 (合計時間順・上位30件・rows examined 付き)
@@ -25,6 +26,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `task analyze` | ベンチの後、毎回（alp / slp / pt-query-digest を集計） |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
+| `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。3台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
 
 ---
 
@@ -233,6 +235,12 @@ curl -s localhost:6060/debug/pprof/ | head -3
 task pprof
 ```
 
+同じくベンチの直前に、手元から3台の CPU・メモリの記録を同時に始める（75秒間。ベンチより少し長めに取る）。
+
+```bash
+for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
+```
+
 ポータルでベンチを回し、結果が出たら集計して記録する。
 
 ```
@@ -255,6 +263,12 @@ task alp
 - **slp**: クエリを合計時間の大きい順に1行ずつ並べた表。まずここで上位5つを見る。`AVG(ROWSEXAMINED)` が `AVG(ROWSSENT)` より桁違いに大きいクエリはインデックスが効いていない可能性が高い。`COUNT` が異常に多いものは N+1 の可能性が高い
 - **pt-query-digest**: slp で気になったクエリの詳細を見るときに使う。`Profile` 表の `Rank` から該当クエリを探すと、実際のクエリ例（そのまま `EXPLAIN` に使える）と対象テーブル名が載っている
 - **pprof**: `Top` 表示で、アプリの CPU を使っている関数を確認する。DB 待ちが長い場合は、ここではあまり目立たない
+- **CPU・メモリ（`task monitor`）**: サーバーごとに、全体の CPU 使用率・iowait・メモリと、プロセス別の CPU（100% = 1コア分）が出る
+  - 全体の CPU が張り付いている（80% 以上）: いちばん使っているプロセスがボトルネック。mysqld ならクエリ・インデックスの改善か DB の別サーバー化、アプリなら pprof で重い関数を探すか台数を増やす、nginx なら静的配信・gzip・keepalive を見直す
+  - CPU に余裕があるのにスコアが伸びない: 待ちが原因。ロック待ち、外部 API、アプリ内の sleep やリトライ間隔、コネクション数の上限（`MaxOpenConns`）、スコア計算式側の制約を疑う
+  - iowait が高い: ディスク待ち。`innodb_buffer_pool_size` の不足や、binlog・flush の書き込みを疑う
+  - swap を使っている、メモリが9割を超える: buffer pool やアプリのキャッシュを持ちすぎている
+  - サーバー間で差が大きい: 空いているサーバーに処理を移す（DB の分離、重いエンドポイントの振り分け）
 
 **チームで共有する（10:45）**
 

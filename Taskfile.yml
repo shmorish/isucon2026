@@ -94,6 +94,11 @@ tasks:
       - sudo pt-query-digest {{.SLOW_LOG}} > /tmp/slow.txt
       - head -n 120 /tmp/slow.txt
 
+  monitor:
+    desc: ベンチ開始直前に実行。CPU・メモリを1秒ごとに記録して /tmp/resource.txt に要約 (秒数は D=90 で変更)
+    cmds:
+      - ./scripts/monitor.sh {{.D | default 75}}
+
   pprof:
     desc: ベンチ開始直前に実行 → 手元のブラウザで localhost:1080
     interactive: true
