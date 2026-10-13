@@ -9,6 +9,7 @@
 - Claude は手元の Mac 上のこの repo（`~/Work/isucon2026`）で動く。サーバーには `ssh s1` / `ssh s2` / `ssh s3` で入る
 - 各サーバーの `/home/isucon` が同じ repo の checkout になっている。`task deploy` が `git pull` → 設定反映 → ビルド → 再起動 → ログを空にする、までを行う
 - サーバー別の設定は `s1/etc/` `s2/etc/` `s3/etc/` にあり、`task deploy` でそのサーバーの `/etc` にコピーされる
+- アプリの環境変数ファイル（DB の接続先など。例: `~/env.sh`）は `s1/home/` などにあり、`task deploy` でそのサーバーのホームに書き戻される。**接続先の変更はこのファイルを編集して commit する**（サーバー上で直接書き換えない）
 - コマンドの詳細は `README.md` と `Taskfile.yml`（`task --list`）を見る
 
 ## 最初に読むもの
@@ -29,7 +30,7 @@
    - `ssh s1 cat ~/scores.log`（スコアの推移とそのときのコミット）
 3. いちばん効果が大きそうな変更を**1つだけ**選び、理由を数字で説明する
 4. 実装し、手元で `cd webapp/go && go build ./...` が通ることを確認してから commit・push する
-5. 対象サーバーで `ssh sN 'cd ~ && task deploy'` を実行する。DB だけのサーバーなど、全台に必要なら全台で実行する
+5. 手元で `./scripts/deploy-all.sh` を実行する（全台に同時に deploy し、未 push の変更があれば止まる）。1台だけなら `./scripts/deploy-all.sh s2` のように指定する。FAIL が出たらログを読んで直す
 6. 人間に次の形で報告して**止まる**。ベンチは人間が回す
 
 ```
@@ -51,10 +52,29 @@ for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & don
 
 ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'` を実行して結果を読む。
 
+## DB の操作
+
+- SQL は `ssh s1 "sudo mysql <DB名> -e '<SQL>'"` で打つ。DB 名は `s1/collect.md` のテーブル一覧か、環境変数ファイルで確かめる。DB を別サーバーに移した後は、そのサーバー（例: s2）で打つ
+- インデックスを足す前に、slp の上位クエリを `EXPLAIN` で確かめる（`type: ALL` や `rows` が大きいものが候補）。足した後も `EXPLAIN` で使われていることを確かめる
+- 重い `SELECT` を試しに打つときは、ベンチ中を避ける
+
+## スキーマ変更のルール
+
+- **インデックス・カラム・テーブルの追加は、`/initialize` で毎回実行される場所に書く**。多くの問題では `/initialize` がスキーマ用の SQL ファイル（`webapp/sql/` など）や初期化スクリプトを流し直すので、手で `ALTER TABLE` しただけの変更は次の `/initialize` で消える。まず `/initialize` が何を実行しているかをコードで確かめ、そこに書く
+- 何度流しても失敗しない書き方にする（`CREATE TABLE IF NOT EXISTS`、インデックスはテーブル定義に含めるか、初期化の中で作り直す）
+- **新しいカラムやテーブルを足したら、既存データの分も `/initialize` の中で計算して埋める**（例: 累計値のカラムを足したら、初期データから集計して UPDATE する）。新しいデータだけ埋めて既存分を空のままにしない
+- deploy の後、ベンチが動いていないときに `ssh s1 'curl -s -X POST localhost/initialize'` を実行し、`SHOW INDEX FROM <テーブル>` や件数で変更が残っていることを確かめる（エンドポイントのパスとメソッドは `notes/manual.md` に従う）
+
+## 再起動試験
+
+- 次の変更の後は、人間に再起動試験を提案する: DB の別サーバー化、メモリキャッシュの追加、ミドルウェアの追加、systemd や環境変数ファイルの変更
+- 人間に頼まれたら手元で `./scripts/reboot-all.sh` を実行する（全台を再起動し、サービスの状態と `GET /` の応答を出す）。**頼まれていないときは実行しない**
+- 結果に `inactive` や `failed`、`GET /` が 200 以外があれば、原因を調べて人間に報告する。そのあと人間がベンチを回し、ブラウザで画面を確認する
+
 ## 絶対に守ること（失格・事故防止）
 
 - **再起動後も動くこと**。競技後に全台再起動してから追試がある。メモリに持つキャッシュは、起動時か `/initialize` で DB から作り直せる形にする。ベンチ中に書き込まれたデータは再起動後も取得できなければならない（DB に必ず書く）
-- **`/initialize` を壊さない**。追加したテーブル・カラム・キャッシュ・Redis などは `/initialize` の中で初期化する
+- **`/initialize` を壊さない**。追加したテーブル・カラム・キャッシュ・Redis などは `/initialize` の中で初期化する（「スキーマ変更のルール」参照）
 - **仕様を変えない**。レスポンスの形、ステータスコード、並び順、ページングの件数、エラー時の挙動を変えない。迷ったら変えずに人間に聞く
 - **キャッシュは `notes/manual.md` の猶予の範囲内だけ**。猶予が書かれていなければ、更新時に必ず無効化する
 - **マニュアルのメンテナンス用コマンドが動く状態を保つ**
@@ -81,7 +101,7 @@ for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & don
 1. `interpolateParams=true`、`MaxOpenConns` の調整（`snippets/go/db.go`）
 2. slp 上位のクエリにインデックス（複合インデックス、`ORDER BY ... DESC` を含める）
 3. N+1 を JOIN か `IN` にまとめる。`LIMIT 1` の付け忘れを直す
-4. DB を別サーバーへ分離（s2 の MySQL を `bind-address = 0.0.0.0` にし、アプリの接続先を s2 のプライベート IP に。s2 のアプリは `systemctl disable --now`）
+4. DB を別サーバーへ分離（`s2/etc/mysql/` の設定で `bind-address = 0.0.0.0` にし、DB ユーザーに他ホストからの接続権限を付け、`s1/home/` などの環境変数ファイルで接続先を s2 のプライベート IP に変える。s2 のアプリは `systemctl disable --now`。終わったら再起動試験を提案する）
 5. 変わらないデータ（マスタ、設定）を起動時にメモリへ載せる（`snippets/go/cache.go`）
 6. 重い集計は書き込み時に事前計算するか、singleflight と短い TTL でまとめる
 7. 画像などを DB から出してファイルにし、nginx で返す（静的配信 / `X-Accel-Redirect`、`expires`）
@@ -98,4 +118,4 @@ for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & don
 - **〜12:00**: 計測を入れ、インデックス・N+1・接続設定など確実な改善を積む。DB の分離を決める
 - **12:00〜17:00**: 1サイクル1変更で改善を繰り返す
 - **17:00〜**: 新しい改善はしない。ログと計測を止める（nginx `access_log off;`、`slow_query_log = 0`、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止）、`snippets/mysql-isu.cnf` の耐久性設定を入れる
-- **17:30〜**: コードを凍結する。人間が全台再起動してベンチとブラウザ確認を行う。頼まれた確認作業以外はしない
+- **17:30〜**: コードを凍結する。人間の指示で `./scripts/reboot-all.sh` を実行し、人間がベンチとブラウザ確認を行う。頼まれた確認作業以外はしない

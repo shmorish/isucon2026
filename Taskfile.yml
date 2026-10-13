@@ -25,11 +25,20 @@ tasks:
       - ./scripts/collect.sh {{.SERVER_ID}}
 
   get-conf:
-    desc: サーバーの /etc 設定を repo に取り込む
+    desc: サーバーの /etc 設定と、アプリの環境変数ファイル (systemd の EnvironmentFile) を repo に取り込む
     preconditions: *need_server_id
     cmds:
       - mkdir -p {{.SERVER_ID}}/etc
       - for d in nginx mysql; do if [ -d /etc/$d ]; then sudo cp -r /etc/$d {{.SERVER_ID}}/etc/; fi; done
+      # ホーム配下の EnvironmentFile (例: ~/env.sh) を <SERVER_ID>/home/ に取り込む。deploy で書き戻す
+      - |
+        units=$(systemctl list-unit-files --no-legend | awk '{print $1}' | grep -i isu || true)
+        [ -n "$units" ] || exit 0
+        for f in $(systemctl show -p EnvironmentFiles $units | sed -E 's/^EnvironmentFiles=-?//; s/ \(.*//' | sort -u); do
+          case "$f" in
+            "$HOME"/*) rel=${f#"$HOME"/}; mkdir -p "{{.SERVER_ID}}/home/$(dirname "$rel")"; cp "$f" "{{.SERVER_ID}}/home/$rel"; echo "取り込み: $f";;
+          esac
+        done
       - sudo chown -R $(id -un):$(id -gn) {{.SERVER_ID}}
 
   deploy:
@@ -50,6 +59,7 @@ tasks:
           if [ -d {{.SERVER_ID}}/etc/$d ]; then sudo cp -r {{.SERVER_ID}}/etc/$d/. /etc/$d/; fi
         done
         if [ -d {{.SERVER_ID}}/etc/sysctl.d ]; then sudo sysctl --system >/dev/null; fi
+        if [ -d {{.SERVER_ID}}/home ]; then cp -r {{.SERVER_ID}}/home/. "$HOME"/; fi
         sudo systemctl daemon-reload
 
   build:

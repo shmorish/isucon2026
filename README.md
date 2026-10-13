@@ -9,10 +9,12 @@ Taskfile.yml          deploy / analyze / score などの当日コマンド (task
 scripts/setup.sh      各サーバーで1回だけ実行 (alp, slp, pt-query-digest, task 等の導入)
 scripts/collect.sh    サーバーの状況 (スペック・サービス・nginx 設定・テーブル定義) を s1/collect.md にまとめる
 scripts/monitor.sh    ベンチ中の CPU・メモリ (全体とプロセス別) を記録して要約する
+scripts/deploy-all.sh 手元の Mac で実行。全台に同時に task deploy (未 push の変更があれば止まる)
+scripts/reboot-all.sh 手元の Mac で実行。再起動試験 (全台を再起動してサービス状態と GET / を確認)
 scripts/ssh-hosts.sh  手元の Mac で実行。当日のIPを渡すと ~/.ssh/config に s1〜s3 を書く
 scripts/alp.yml       alp の設定。当日 matching_groups を書く
 scripts/slp.yml       slp の設定 (合計時間順・上位30件・rows examined 付き)
-s1/ s2/ s3/           サーバー別 /etc 設定 (task get-conf で取り込む)
+s1/ s2/ s3/           サーバー別の /etc 設定 (etc/) と環境変数ファイル (home/)。task get-conf で取り込み、task deploy で書き戻す
 snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 ```
 
@@ -22,9 +24,11 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 |---|---|
 | `./scripts/ssh-hosts.sh <IP>...` | 当日最初に手元で1回（`~/.ssh/config` を書く） |
 | `./scripts/setup.sh s1` | 各サーバーで最初に1回（ツールのインストール） |
-| `task get-conf` | 各サーバーで最初に1回（`/etc` の設定を repo に取り込む） |
+| `task get-conf` | 各サーバーで最初に1回（`/etc` の設定と環境変数ファイルを repo に取り込む） |
 | `task collect` | 各サーバーで最初に1回（サーバーの状況を `s1/collect.md` に） |
-| `task deploy` | 変更を push した後、毎回 |
+| `./scripts/deploy-all.sh [s1 s2 s3]` | 変更を push した後、毎回（手元から全台に `task deploy`） |
+| `task deploy` | 1台だけサーバー上で反映するとき |
+| `./scripts/reboot-all.sh` | 大きな変更の後と終盤の再起動試験（手元から） |
 | `task analyze` | ベンチの後、毎回（alp / slp / pt-query-digest を集計） |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
@@ -116,7 +120,7 @@ task collect
 ```
 
 - `./scripts/setup.sh s1`: alp・slp・pt-query-digest・task を入れ、`~/.server_id` に `s1` を書く
-- `task get-conf`: `/etc/nginx` と `/etc/mysql` を `s1/etc/` にコピーする
+- `task get-conf`: `/etc/nginx` と `/etc/mysql` を `s1/etc/` に、アプリの環境変数ファイル（例: `~/env.sh`）を `s1/home/` にコピーする
 - `task collect`: スペック・サービス・ポート・nginx の実効設定・MySQL の主要変数・テーブルの件数と定義を `s1/collect.md` にまとめる。Claude にはこのファイルを読ませる。パスワードらしき値は伏せ字になる
 
 Taskfile.yml の先頭3つの変数を手順2で調べた値に書き換え、`.gitignore` の末尾に Go のバイナリ名と巨大なファイルを足す。
@@ -295,18 +299,20 @@ task alp
 ## 改善のループ（10:45〜17:00）
 
 ```
-変更を1つ → push → (対象サーバーで) task deploy → ベンチ → task analyze → task score S=<点数> M="何をしたか"
+変更を1つ → push → (手元で) ./scripts/deploy-all.sh → ベンチ → task analyze → task score S=<点数> M="何をしたか"
 ```
 
 - 1回のベンチで変えるのは1つだけ
+- インデックスやカラムの追加は、`/initialize` で毎回流れるスキーマ用 SQL に書く（手で `ALTER TABLE` しただけだと次の `/initialize` で消える）
+- DB の分離など大きな変更の後は、その場で `./scripts/reboot-all.sh` → ベンチで再起動試験をする
 - スコアが下がったら原因を探さず `git revert`
-- DB を s2 に分けるときは、s2 の `zz-isu.cnf` に `bind-address = 0.0.0.0` を書き、DB ユーザーに他ホストからの接続権限を付け、アプリの接続先を s2 のプライベート IP に向ける。s2 のアプリは `sudo systemctl disable --now isu-go.service` で止める（`task restart` は enabled なサービスだけ再起動する）
+- DB を s2 に分けるときは、s2 の `zz-isu.cnf` に `bind-address = 0.0.0.0` を書き、DB ユーザーに他ホストからの接続権限を付け、`s1/home/` などの環境変数ファイルでアプリの接続先を s2 のプライベート IP に向ける。s2 のアプリは `sudo systemctl disable --now isu-go.service` で止める（`task restart` は enabled なサービスだけ再起動する）
 
 ## 終盤（17:00〜18:00）
 
 - `access_log off;`、`slow_query_log = 0`、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止
 - `snippets/mysql-isu.cnf` の耐久性設定が入っていることを確認
-- 全台再起動 → ベンチが通るか確認 → **ブラウザで画面を確認**
+- `./scripts/reboot-all.sh` で全台再起動 → ベンチが通るか確認 → **ブラウザで画面を確認**
 - 残り30分でコード凍結
 
 ---
