@@ -1,0 +1,8 @@
+sort: sum
+reverse: true
+format: table
+output: count,1xx,2xx,3xx,4xx,5xx,method,uri,min,max,sum,avg,p99
+# 当日: パスパラメータを含む URI をまとめる
+matching_groups:
+  # - ^/api/user/[^/]+$
+  # - ^/image/\d+\.(jpg|png|gif)$

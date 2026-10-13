@@ -1,0 +1,11 @@
+# task slp で使う slp の設定
+sort: sum-query-time
+reverse: true
+format: table
+limit: 30
+output: count,query,sum-query-time,avg-query-time,max-query-time,avg-rows-examined,avg-rows-sent
+bundle_where_in: true
+bundle_values: true
+# 当日: 似たクエリを手でまとめたいときに書く
+# matching_groups:
+#   - SELECT .* FROM `users` WHERE .*

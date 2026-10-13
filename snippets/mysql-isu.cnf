@@ -1,0 +1,24 @@
+# s1/etc/mysql/mysql.conf.d/zz-isu.cnf などに置く (zz で最後に読ませる)
+[mysqld]
+# --- 計測中 ---
+slow_query_log      = 1
+slow_query_log_file = /var/log/mysql/mysql-slow.log
+long_query_time     = 0
+
+# --- 複数台構成: 他ホストから接続 ---
+bind-address    = 0.0.0.0
+max_connections = 1000
+# CREATE USER 'isucon'@'%' IDENTIFIED BY '<既存と同じ>'; GRANT ALL ON *.* TO 'isucon'@'%';
+
+# --- メモリ (DB専用機ならメモリの6〜7割) ---
+innodb_buffer_pool_size = 1G
+
+# --- 耐久性を下げて書き込みを速く (再起動試験でデータが残ることは確認) ---
+disable-log-bin
+innodb_flush_log_at_trx_commit = 2
+innodb_doublewrite             = 0
+innodb_flush_method            = O_DIRECT
+
+# --- 終盤: 計測を止める ---
+# slow_query_log = 0
+# performance_schema = OFF

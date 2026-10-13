@@ -1,0 +1,125 @@
+version: '3'
+
+vars:
+  # ===== 当日に問題に合わせて書き換える =====
+  APP_DIR: $HOME/webapp/go
+  APP_BIN: isucon
+  APP_SERVICE: isu-go.service
+  # ==========================================
+  SERVER_ID:
+    sh: cat ~/.server_id 2>/dev/null || true
+  NGINX_LOG: /var/log/nginx/access.log
+  SLOW_LOG: /var/log/mysql/mysql-slow.log
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  collect:
+    desc: サーバーの状況を <SERVER_ID>/collect.md にまとめる (Claude に読ませる用)
+    preconditions: &need_server_id
+      - sh: test -n "{{.SERVER_ID}}"
+        msg: "SERVER_ID 未設定 (先に ./scripts/setup.sh s1)"
+    cmds:
+      - ./scripts/collect.sh {{.SERVER_ID}}
+
+  get-conf:
+    desc: サーバーの /etc 設定を repo に取り込む
+    preconditions: *need_server_id
+    cmds:
+      - mkdir -p {{.SERVER_ID}}/etc
+      - for d in nginx mysql; do if [ -d /etc/$d ]; then sudo cp -r /etc/$d {{.SERVER_ID}}/etc/; fi; done
+      - sudo chown -R $(id -un):$(id -gn) {{.SERVER_ID}}
+
+  deploy:
+    desc: pull → 設定反映 → ビルド → 再起動 → ログを空に
+    cmds:
+      - git pull
+      - task: deploy-conf
+      - task: build
+      - task: restart
+      - task: bench-prep
+
+  deploy-conf:
+    preconditions: *need_server_id
+    cmds:
+      - |
+        set -e
+        for d in nginx mysql sysctl.d systemd; do
+          if [ -d {{.SERVER_ID}}/etc/$d ]; then sudo cp -r {{.SERVER_ID}}/etc/$d/. /etc/$d/; fi
+        done
+        if [ -d {{.SERVER_ID}}/etc/sysctl.d ]; then sudo sysctl --system >/dev/null; fi
+        sudo systemctl daemon-reload
+
+  build:
+    cmds:
+      - cd {{.APP_DIR}} && go build -o {{.APP_BIN}}
+
+  restart:
+    desc: enabled なサービスだけ再起動 (DB専用機ではアプリを disable しておく)
+    cmds:
+      - |
+        set -e
+        if systemctl is-enabled nginx >/dev/null 2>&1; then sudo nginx -t; fi
+        for s in nginx mysql {{.APP_SERVICE}}; do
+          if systemctl is-enabled $s >/dev/null 2>&1; then sudo systemctl restart $s; fi
+        done
+
+  bench-prep:
+    desc: ベンチ前にログを空にする
+    cmds:
+      - sudo truncate -s 0 {{.NGINX_LOG}} {{.SLOW_LOG}} 2>/dev/null || true
+
+  analyze:
+    desc: ベンチ後に alp / slp / pt-query-digest を集計して通知
+    cmds:
+      - task: alp
+      - task: slp
+      - task: slow
+      - task: notify
+
+  alp:
+    desc: アクセスログをエンドポイントごとに合計時間順で一覧
+    cmds:
+      - sudo alp json --file {{.NGINX_LOG}} --config scripts/alp.yml | tee /tmp/alp.txt
+
+  slp:
+    desc: スロークエリを合計時間順に一覧 (rows examined が rows sent より極端に多いものはインデックス候補)
+    cmds:
+      - sudo slp my --config scripts/slp.yml --file {{.SLOW_LOG}} | tee /tmp/slp.txt
+
+  slow:
+    desc: pt-query-digest の詳細 (EXPLAIN 用のクエリ例やテーブル名も出る)
+    cmds:
+      - sudo pt-query-digest {{.SLOW_LOG}} > /tmp/slow.txt
+      - head -n 120 /tmp/slow.txt
+
+  pprof:
+    desc: ベンチ開始直前に実行 → 手元のブラウザで localhost:1080
+    interactive: true
+    cmds:
+      - go tool pprof -http=0.0.0.0:1080 "http://localhost:6060/debug/pprof/profile?seconds=60"
+
+  notify:
+    desc: DISCORD_WEBHOOK を環境変数で渡す (repo にコミットしない)
+    cmds:
+      - |
+        if [ -z "${DISCORD_WEBHOOK:-}" ]; then echo "DISCORD_WEBHOOK 未設定、通知スキップ"; exit 0; fi
+        files=""
+        if [ -f /tmp/alp.txt ]; then files="$files -F file1=@/tmp/alp.txt"; fi
+        if [ -f /tmp/slp.txt ]; then files="$files -F file2=@/tmp/slp.txt"; fi
+        if [ -f /tmp/slow.txt ]; then files="$files -F file3=@/tmp/slow.txt"; fi
+        curl -s -F "content={{.SERVER_ID}} $(git log -1 --format='%h %s')" $files "$DISCORD_WEBHOOK" >/dev/null
+
+  score:
+    desc: 'ポータルで結果を見てから: task score S=12345 M="メモ" → ~/scores.log に追記して Discord に通知'
+    requires:
+      vars: [S]
+    cmds:
+      # git には入れない (サーバーから push すると他の人の push と衝突するため)
+      - |
+        line="$(date +%H:%M) {{.SERVER_ID}} score={{.S}} $(git log -1 --format='%h %s') {{.M}}"
+        echo "$line" >> ~/scores.log
+        echo "$line"
+        if [ -n "${DISCORD_WEBHOOK:-}" ]; then curl -s -F "content=$line" "$DISCORD_WEBHOOK" >/dev/null; fi

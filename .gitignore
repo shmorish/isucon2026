@@ -1,0 +1,14 @@
+# repo は /home/isucon に置く。必要なものだけホワイトリストで追跡する
+/*
+!/.gitignore
+!/Taskfile.yml
+!/scripts/
+!/README.md
+!/snippets/
+!/s[0-9]/
+!/webapp/
+
+# 当日: ビルド成果物・巨大ファイルを追記する
+node_modules/
+*.tar.gz
+*.sql.gz
