@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -327,6 +328,9 @@ func storeUploadedImage(id string, data []byte) error {
 	if err := writeImageFileDurable(path, data); err != nil {
 		return err
 	}
+	if err := recordUploadedImage(id); err != nil {
+		return err
+	}
 	// 見てよいかは毎回 DB で判定するので、コミット前に入れてよい。読み込みは Content-Length で1回だけ確保するので
 	// （upload_read.go）余りは数 KB。長さが分からず伸ばしながら読んだときだけ、余った容量まで抱えないようにコピーする
 	if cap(data)-len(data) > uploadSlackBytes {
@@ -395,6 +399,46 @@ func imageDiskPath(id string) (string, bool) {
 		return "", false
 	}
 	return filepath.Join(imageDiskCacheDir, id[:2], id), true
+}
+
+// アップロードされた画像の id を1行ずつ残し、次の /initialize でファイルを消す。初期化で DB から行が消えるのに
+// ファイルが残り、ベンチ1回で約3GB ずつ増えて s1 のディスクがあふれた（no space left on device で FAIL）
+var uploadedImagesMu sync.Mutex
+
+func uploadedImagesLog() string { return filepath.Join(imageDiskCacheDir, ".uploaded") }
+
+func recordUploadedImage(id string) error {
+	uploadedImagesMu.Lock()
+	defer uploadedImagesMu.Unlock()
+	f, err := os.OpenFile(uploadedImagesLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(id + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+func removeUploadedImages() error {
+	uploadedImagesMu.Lock()
+	defer uploadedImagesMu.Unlock()
+	data, err := os.ReadFile(uploadedImagesLog())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Fields(string(data)) {
+		if path, ok := imageDiskPath(id); ok {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return os.Remove(uploadedImagesLog())
 }
 
 // getImageData はメモリ、なければディスクから画像本体を返す
