@@ -172,6 +172,11 @@ tasks:
     cmds:
       - ./scripts/monitor.sh {{.D | default 75}}
 
+  locks:
+    desc: s4 でベンチ開始直前に実行。ロック待ちを0.5秒ごとに記録し、待たせている側の接続元・状態・クエリで /tmp/locks.txt に要約 (秒数は D=90 で変更)
+    cmds:
+      - ./scripts/locks.sh {{.D | default 75}}
+
   pprof:
     desc: ベンチ開始直前に実行 → 手元のブラウザで localhost:1080
     interactive: true

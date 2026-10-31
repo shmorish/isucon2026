@@ -9,6 +9,7 @@ Taskfile.yml          deploy / analyze / score などの当日コマンド (task
 scripts/setup.sh      各サーバーで1回だけ実行 (alp, slp, pt-query-digest, task 等の導入)
 scripts/collect.sh    サーバーの状況 (スペック・サービス・nginx 設定・テーブル定義) を s1/collect.md にまとめる
 scripts/monitor.sh    ベンチ中の CPU・メモリ (全体とプロセス別) を記録して要約する
+scripts/locks.sh      s4 で実行。ベンチ中のロック待ちを、待たせている側の接続元・状態・クエリで集計する (task locks)
 scripts/deploy-all.sh 手元の Mac で実行。全台に同時に task deploy (未 push の変更があれば止まる)
 scripts/reboot-all.sh 手元の Mac で実行。再起動試験 (全台を再起動してサービス状態と GET / を確認)
 scripts/ssh-hosts.sh  手元の Mac で実行。当日のIPを渡すと ~/.ssh/config に s1〜s3 を書く
@@ -247,6 +248,12 @@ task pprof
 
 ```bash
 for h in s1 s2 s3 s4; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
+```
+
+ロック待ちを調べるときは、同時に s4 で `task locks` も回す（`/tmp/locks.txt`。待たせている側が `idle in transaction` なら、ロックを持ったままアプリとの往復を待っている）。
+
+```bash
+ssh s4 'cd ~ && task locks' > /tmp/locks-s4.txt
 ```
 
 ポータルでベンチを回し、結果が出たら集計して記録する。
