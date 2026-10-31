@@ -10,6 +10,11 @@ CREATE INDEX IF NOT EXISTS follows_followee_id ON follows(followee_id);
 CREATE INDEX IF NOT EXISTS friend_requests_recipient_id_status ON friend_requests(recipient_id, status);
 CREATE INDEX IF NOT EXISTS friend_requests_requester_id_status ON friend_requests(requester_id, status);
 CREATE INDEX IF NOT EXISTS posts_posting_window_id_author_id ON posts(posting_window_id, author_id);
+-- BRIN, not btree: created_at follows the physical order (correlation ~1), and BRIN builds with one scan and adds no work to inserts
+CREATE INDEX IF NOT EXISTS notifications_created_at_brin ON notifications USING brin(created_at);
+CREATE INDEX IF NOT EXISTS comments_created_at_brin ON comments USING brin(created_at);
+CREATE INDEX IF NOT EXISTS realmojis_created_at_brin ON realmojis USING brin(created_at);
+CREATE INDEX IF NOT EXISTS posts_created_at_brin ON posts USING brin(created_at);
 
 SET session_replication_role = replica;
 
