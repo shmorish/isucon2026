@@ -28,6 +28,9 @@ func initializeHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		resetImageMetaCaches()
+		if err := userSearch.load(c.Request().Context(), h.DB); err != nil {
+			return err
+		}
 		// reset.sql がテーブルを変えたあとに古いプリペアド文で "cached plan must not change result type" に
 		// ならないよう、空いている接続を捨てて文を作り直させる
 		h.DB.SetMaxIdleConns(0)

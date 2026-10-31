@@ -45,12 +45,22 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		viewer := GetSession(c).UserID
 		query := normalizeSearchText(input.Q)
 		// username は [a-z0-9_.-] だけなので正規化しても変わらない。display_name は書き込み時に正規化した display_name_search と比べる
+		// 候補を s1 のメモリで絞り（userSearchIndex）、最終の判定と並び順は今までどおり DB で行う
 		var users []User
+		args := []any{viewer, input.BeforeUsername, input.BeforeID, "%" + likeEscaper.Replace(query) + "%"}
+		candidateFilter := ""
+		if ids, ok := userSearch.candidates(query); ok {
+			if len(ids) == 0 {
+				return c.JSON(http.StatusOK, searchUsersResponse{Items: []relationshipUserResponse{}, HasMore: false})
+			}
+			candidateFilter = " AND id = ANY($5)"
+			args = append(args, ids)
+		}
 		if err := h.DB.SelectContext(ctx, &users, `SELECT `+strings.Join(userColumns, ", ")+` FROM users u
 			WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3))
-			  AND (username LIKE $4 OR display_name_search LIKE $4)
+			  AND (username LIKE $4 OR display_name_search LIKE $4)`+candidateFilter+`
 			  AND NOT EXISTS (SELECT 1 FROM block_relations b WHERE (b.blocker_id=$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$1))
-			ORDER BY username, id LIMIT 51`, viewer, input.BeforeUsername, input.BeforeID, "%"+likeEscaper.Replace(query)+"%"); err != nil {
+			ORDER BY username, id LIMIT 51`, args...); err != nil {
 			return err
 		}
 		hasMore := len(users) > 50
