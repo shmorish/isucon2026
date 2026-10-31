@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 手元の Mac で実行: ./scripts/deploy-all.sh [s1 s2 s3]
-# 未 push の変更がないか確かめてから、指定したサーバー (省略時は s1〜s3) で task deploy を同時に実行する。
+# 手元の Mac で実行: ./scripts/deploy-all.sh [s1 s2 s3 s4]
+# 未 push の変更がないか確かめてから、指定したサーバー (省略時は s1〜s4) で task deploy を同時に実行する。
 set -uo pipefail
 
 hosts=("$@")
-[ ${#hosts[@]} -gt 0 ] || hosts=(s1 s2 s3)
+[ ${#hosts[@]} -gt 0 ] || hosts=(s1 s2 s3 s4)
 
 cd "$(dirname "$0")/.."
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then

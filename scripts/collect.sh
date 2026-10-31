@@ -26,15 +26,19 @@ section() {
   section "isu 関連の unit 定義" 'for u in $(systemctl list-unit-files --no-legend | awk "{print \$1}" | grep -i isu); do systemctl cat "$u"; echo; done'
   section "EnvironmentFile の中身 (値は一部伏せ字)" 'for f in $(systemctl show -p EnvironmentFiles $(systemctl list-unit-files --no-legend | awk "{print \$1}" | grep -i isu) 2>/dev/null | sed -E "s/^EnvironmentFiles=//; s/ \(.*//" | sort -u); do echo "--- $f"; cat "$f"; done'
   section "listen しているポート" 'sudo ss -tlnp'
-  section "バージョン" 'nginx -v 2>&1; mysql --version; go version; redis-server --version; h2o --version 2>&1 | head -1'
+  section "バージョン" 'nginx -v 2>&1; psql --version; ~/local/go/bin/go version'
   section "ホーム / webapp の構成" 'ls -la ~; find ~/webapp -maxdepth 2 -not -path "*/node_modules*" -not -path "*/.git*" | sort'
   section "大きいファイル" 'du -ah ~ 2>/dev/null | sort -rh | head -20'
 
   LIMIT=600 section "nginx の実効設定 (nginx -T)" 'sudo nginx -T 2>/dev/null | grep -Ev "^\s*(#|$)"'
 
-  section "MySQL の主要変数" 'sudo mysql -N -e "SHOW VARIABLES WHERE Variable_name IN (\"version\",\"innodb_buffer_pool_size\",\"max_connections\",\"slow_query_log\",\"long_query_time\",\"log_bin\",\"innodb_flush_log_at_trx_commit\",\"innodb_doublewrite\",\"performance_schema\",\"bind_address\")"'
-  section "テーブルの件数とサイズ" 'sudo mysql -e "SELECT table_schema, table_name, table_rows, ROUND((data_length+index_length)/1024/1024,1) AS mb FROM information_schema.tables WHERE table_schema NOT IN (\"mysql\",\"sys\",\"information_schema\",\"performance_schema\") ORDER BY data_length+index_length DESC"'
-  LIMIT=2000 section "テーブル定義 (SHOW CREATE TABLE)" 'for db in $(sudo mysql -N -e "SHOW DATABASES" | grep -Ev "^(mysql|sys|information_schema|performance_schema)$"); do for t in $(sudo mysql -N -e "SHOW TABLES" "$db"); do echo "-- $db.$t"; sudo mysql -N -e "SHOW CREATE TABLE \`$t\`\G" "$db" | sed 1,2d; echo; done; done'
+  if systemctl is-active -q postgresql; then
+    PSQL='sudo -u postgres psql -X -d isureal'
+    section "PostgreSQL の主要設定" "$PSQL -c \"SELECT name, setting, unit FROM pg_settings WHERE name IN ('server_version','shared_buffers','work_mem','effective_cache_size','max_connections','synchronous_commit','fsync','wal_level','listen_addresses','log_min_duration_statement','shared_preload_libraries','max_wal_size','checkpoint_timeout','random_page_cost')\""
+    section "pg_hba.conf (コメント除く)" 'sudo grep -Ev "^\s*(#|$)" $(sudo -u postgres psql -XtAc "SHOW hba_file")'
+    section "テーブルの件数とサイズ" "$PSQL -c \"SELECT relname, n_live_tup, pg_size_pretty(pg_total_relation_size(relid)) AS total FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC\""
+    LIMIT=3000 section "テーブル定義 (\\d)" "for t in \$($PSQL -XtAc \"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1\"); do $PSQL -c \"\\\\d \$t\"; done"
+  fi
 } > "$OUT"
 
 echo "wrote $OUT ($(wc -l < "$OUT") lines)"

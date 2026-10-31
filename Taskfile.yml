@@ -3,8 +3,9 @@ version: '3'
 vars:
   # ===== 当日に問題に合わせて書き換える =====
   APP_DIR: $HOME/webapp/go
-  APP_BIN: isucon
-  APP_SERVICE: isu-go.service
+  APP_BIN: isureal
+  APP_SERVICE: isureal-go.service
+  GO: $HOME/local/go/bin/go
   # ==========================================
   SERVER_ID:
     sh: cat ~/.server_id 2>/dev/null || true
@@ -30,6 +31,9 @@ tasks:
     cmds:
       - mkdir -p {{.SERVER_ID}}/etc
       - for d in nginx mysql; do if [ -d /etc/$d ]; then sudo cp -r /etc/$d {{.SERVER_ID}}/etc/; fi; done
+      # PostgreSQL はアプリ機にも入っているので、動かしているサーバーだけ取り込む
+      - if systemctl is-enabled postgresql >/dev/null 2>&1; then sudo cp -r /etc/postgresql {{.SERVER_ID}}/etc/; fi
+      - mkdir -p {{.SERVER_ID}}/etc/systemd/system && cp /etc/systemd/system/isureal-*.service {{.SERVER_ID}}/etc/systemd/system/
       # ホーム配下の EnvironmentFile (例: ~/env.sh) を <SERVER_ID>/home/ に取り込む。deploy で書き戻す
       - |
         units=$(systemctl list-unit-files --no-legend | awk '{print $1}' | grep -i isu || true)
@@ -55,7 +59,7 @@ tasks:
     cmds:
       - |
         set -e
-        for d in nginx mysql sysctl.d systemd; do
+        for d in nginx mysql postgresql sysctl.d systemd; do
           if [ -d {{.SERVER_ID}}/etc/$d ]; then sudo cp -r {{.SERVER_ID}}/etc/$d/. /etc/$d/; fi
         done
         if [ -d {{.SERVER_ID}}/etc/sysctl.d ]; then sudo sysctl --system >/dev/null; fi
@@ -64,7 +68,7 @@ tasks:
 
   build:
     cmds:
-      - cd {{.APP_DIR}} && go build -o {{.APP_BIN}}
+      - cd {{.APP_DIR}} && {{.GO}} build -o {{.APP_BIN}} ./cmd/isureal
 
   restart:
     desc: enabled なサービスだけ再起動 (DB専用機ではアプリを disable しておく)
@@ -72,7 +76,7 @@ tasks:
       - |
         set -e
         if systemctl is-enabled nginx >/dev/null 2>&1; then sudo nginx -t; fi
-        for s in nginx mysql {{.APP_SERVICE}}; do
+        for s in nginx mysql postgresql {{.APP_SERVICE}}; do
           if systemctl is-enabled $s >/dev/null 2>&1; then sudo systemctl restart $s; fi
         done
 

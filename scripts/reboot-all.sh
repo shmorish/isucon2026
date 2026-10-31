@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 手元の Mac で実行: ./scripts/reboot-all.sh [s1 s2 s3]
+# 手元の Mac で実行: ./scripts/reboot-all.sh [s1 s2 s3 s4]
 # 再起動試験: 全台を再起動し、戻ってきたらサービスの状態とアプリの応答を確かめる。
 # このあと人間がベンチを回し、ブラウザで画面を確認する。
 set -uo pipefail
 
 hosts=("$@")
-[ ${#hosts[@]} -gt 0 ] || hosts=(s1 s2 s3)
+[ ${#hosts[@]} -gt 0 ] || hosts=(s1 s2 s3 s4)
 
 for h in "${hosts[@]}"; do
   ssh -O exit "$h" >/dev/null 2>&1 || true   # 使い回し中の接続を切る
