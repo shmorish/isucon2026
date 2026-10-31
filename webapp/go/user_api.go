@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v5"
@@ -89,27 +90,24 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		if err := lockRegionUsersShared(ctx, tx, input.Region); err != nil {
-			return err
-		}
 		// ユーザー名が一意である必要があります。
-		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(2, hashtext($1))`, input.Username); err != nil {
+		// The region's shared lock (as lockRegionUsersShared) comes before the username lock; OFFSET 0 keeps the subquery from being flattened so that order is fixed.
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(2, hashtext($2)) FROM (SELECT pg_advisory_xact_lock_shared(1, hashtext($1)) OFFSET 0) AS region_lock`, input.Region, input.Username); err != nil {
 			return err
 		}
-		var exists bool
-		if err := tx.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, input.Username); err != nil {
-			return err
-		}
-		if exists {
+		// Not folded into the lock statement: the existence check needs a snapshot taken after the username lock is granted.
+		var user User
+		err = tx.GetContext(ctx, &user, `INSERT INTO users (id, username, secret_key_hash, display_name, region)
+			SELECT $1, $2::text, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $2::text)
+			RETURNING `+strings.Join(userColumns, ", "),
+			uuid.NewString(), input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region)
+		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusConflict, "username_taken")
 		}
-		userID := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO users (id, username, secret_key_hash, display_name, region) VALUES ($1, $2, $3, $4, $5)`,
-			userID, input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region); err != nil {
+		if err != nil {
 			return err
 		}
-		user, err := getUser(ctx, tx, userID)
-		if err != nil {
+		if err := user.setImageKey(); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
