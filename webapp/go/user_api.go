@@ -88,8 +88,8 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		defer tx.Rollback()
 		// ユーザー名が一意である必要があります。
-		// The region's shared lock (as lockRegionUsersShared) comes before the username lock; OFFSET 0 keeps the subquery from being flattened so that order is fixed.
-		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(2, hashtext($2)) FROM (SELECT pg_advisory_xact_lock_shared(1, hashtext($1)) OFFSET 0) AS region_lock`, input.Region, input.Username); err != nil {
+		// Takes the region's shared lock (as lockRegionUsersShared), then the username lock, in one statement.
+		if _, err := tx.ExecContext(ctx, lockRegistrationSQL, input.Region, input.Username); err != nil {
 			return err
 		}
 		// Not folded into the lock statement: the existence check needs a snapshot taken after the username lock is granted.
