@@ -37,14 +37,24 @@ type getMemoriesByDateResponse getMemoriesResponse
 func getMemoriesHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input getMemoriesRequest
-		if err := c.Bind(&input); err != nil {
+		var start time.Time
+		err := c.Bind(&input)
+		if err == nil {
+			start, err = time.Parse("2006-01", input.Month)
+			if err != nil {
+				err = NewAPIError(http.StatusBadRequest, "invalid_memory_period")
+			}
+		}
+		if err == nil {
+			err = validateMemoryPagination(input.BeforePostedAt, input.BeforeID)
+		}
+		if err != nil {
+			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
+				return sessionErr
+			}
 			return err
 		}
-		start, err := time.Parse("2006-01", input.Month)
-		if err != nil {
-			return NewAPIError(http.StatusBadRequest, "invalid_memory_period")
-		}
-		response, err := listMemories(c.Request().Context(), h.DB, GetSession(c).UserID, start, start.AddDate(0, 1, 0), input.BeforePostedAt, input.BeforeID)
+		response, err := listMemories(c, h, start, start.AddDate(0, 1, 0), input.BeforePostedAt, input.BeforeID)
 		if err != nil {
 			return err
 		}
@@ -55,14 +65,24 @@ func getMemoriesHandler(h *HandlerContext) echo.HandlerFunc {
 func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input getMemoriesByDateRequest
-		if err := c.Bind(&input); err != nil {
+		var start time.Time
+		err := c.Bind(&input)
+		if err == nil {
+			start, err = time.Parse(time.DateOnly, input.Date)
+			if err != nil {
+				err = NewAPIError(http.StatusBadRequest, "invalid_memory_period")
+			}
+		}
+		if err == nil {
+			err = validateMemoryPagination(input.BeforePostedAt, input.BeforeID)
+		}
+		if err != nil {
+			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
+				return sessionErr
+			}
 			return err
 		}
-		start, err := time.Parse(time.DateOnly, input.Date)
-		if err != nil {
-			return NewAPIError(http.StatusBadRequest, "invalid_memory_period")
-		}
-		response, err := listMemories(c.Request().Context(), h.DB, GetSession(c).UserID, start, start.AddDate(0, 0, 1), input.BeforePostedAt, input.BeforeID)
+		response, err := listMemories(c, h, start, start.AddDate(0, 0, 1), input.BeforePostedAt, input.BeforeID)
 		if err != nil {
 			return err
 		}
@@ -70,21 +90,48 @@ func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, start, end time.Time, beforeAt *time.Time, beforeID string) (getMemoriesResponse, error) {
-	var response getMemoriesResponse
+func validateMemoryPagination(beforeAt *time.Time, beforeID string) error {
 	if (beforeAt == nil) != (beforeID == "") {
-		return response, NewAPIError(http.StatusBadRequest, "invalid_pagination")
+		return NewAPIError(http.StatusBadRequest, "invalid_pagination")
 	}
-	posts, err := selectPostsWithAuthor(ctx, db, `
-  AND p.author_id = $1 AND w.local_date >= $2 AND w.local_date < $3
+	return nil
+}
+
+// listMemories looks the session up in the same statement as the posts (FoldedSessionMiddleware), so the posts cost no
+// extra round trip. With no posts the statement returns no row either way, so only then the session is checked alone.
+func listMemories(c *echo.Context, h *HandlerContext, start, end time.Time, beforeAt *time.Time, beforeID string) (getMemoriesResponse, error) {
+	var response getMemoriesResponse
+	ctx := c.Request().Context()
+	var rows []struct {
+		sessionColumns
+		PostWithAuthor
+	}
+	if err := h.DB.SelectContext(ctx, &rows, `
+  WITH `+sessionCTE+`
+  SELECT `+sessionSelect+`, `+postColumns+`, `+userColumnsAs("u", "author")+`
+  FROM sess
+  JOIN posts p ON p.author_id = sess.user_id
+  JOIN posting_windows w ON w.id = p.posting_window_id
+  JOIN users u ON u.id = p.author_id AND u.status = 'active'
+  WHERE p.deleted_at IS NULL AND w.local_date >= $2 AND w.local_date < $3
   AND ($4::timestamptz IS NULL OR (p.posted_at, p.id) < ($4, $5))
   ORDER BY p.posted_at DESC, p.id DESC LIMIT 51
- `, userID, start, end, beforeAt, beforeID)
-	if err != nil {
+ `, foldedSessionTokenHash(c), start, end, beforeAt, beforeID); err != nil {
 		return response, err
 	}
-	items := make([]memoryPostResponse, 0, len(posts))
-	for _, post := range posts {
+	if len(rows) == 0 {
+		if err := requireFoldedSession(c, h); err != nil {
+			return response, err
+		}
+	} else if err := acceptFoldedSession(c, h, true, rows[0].sessionColumns); err != nil {
+		return response, err
+	}
+	items := make([]memoryPostResponse, 0, len(rows))
+	for _, row := range rows {
+		post := row.PostWithAuthor
+		if err := post.Author.setImageKey(); err != nil {
+			return response, err
+		}
 		items = append(items, memoryPostResponse{
 			createPostResponse: newPostResponse(post.Post, post.Author),
 			RealMojis:          make([]replaceRealMojiResponse, 0),
@@ -95,7 +142,7 @@ func listMemories(ctx context.Context, db sqlx.QueryerContext, userID string, st
 	if response.HasMore {
 		items = items[:50]
 	}
-	if err := loadMemoryInteractions(ctx, db, items); err != nil {
+	if err := loadMemoryInteractions(ctx, h.DB, items); err != nil {
 		return response, err
 	}
 	response.Items = items
