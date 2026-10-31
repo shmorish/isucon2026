@@ -32,6 +32,10 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusBadRequest, "invalid_profile_image")
 		}
 
+		imageID := uuid.NewString()
+		if err := storeUploadedImage(imageID, data); err != nil {
+			return err
+		}
 		ctx := c.Request().Context()
 		userID := GetSession(c).UserID
 		tx, err := h.DB.BeginTxx(ctx, nil)
@@ -46,9 +50,8 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 			return err
 		}
-		imageID := uuid.NewString()
 		var createdAt time.Time
-		if err := tx.GetContext(ctx, &createdAt, putProfileImageQuery, binaryImage, userID, imageID, data, time.Now().UTC()); err != nil {
+		if err := tx.GetContext(ctx, &createdAt, putProfileImageQuery, binaryImage, userID, imageID, fileBackedImageData, time.Now().UTC()); err != nil {
 			return err
 		}
 		if err := deleteImageObject(ctx, tx, old); err != nil {
@@ -57,7 +60,6 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		cacheUploadedImage(imageID, data)
 		rememberUploadedImageMeta(imageID, userID, createdAt)
 		return c.NoContent(http.StatusNoContent)
 	}

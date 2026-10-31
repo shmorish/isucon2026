@@ -78,7 +78,10 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-
+		imageID := uuid.NewString()
+		if err := storeUploadedImage(imageID, data); err != nil {
+			return err
+		}
 		ctx := c.Request().Context()
 		actor := GetSession(c).UserID
 		tx, post, err := beginTxWithPost(ctx, h.DB, input.PostID)
@@ -104,14 +107,13 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if !found || !viewer.canView(current.Post) {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
-		imageID := uuid.NewString()
 		createdAt := time.Now().UTC()
 		// 鍵と画像 id はここで決まるので、レスポンスの署名は INSERT・COMMIT と並行して取り寄せる（#77）
 		signed := startPrefetchImageSignatures(ctx, appendImagesToSign(nil, viewer.User, imageID))
 		defer signed()
 		// The new realmoji is inserted in a separate statement: in one statement the
 		// replacement UPDATE could run after it and hit realmojis_one_active.
-		if _, err := tx.ExecContext(ctx, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, data, createdAt); err != nil {
+		if _, err := tx.ExecContext(ctx, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, fileBackedImageData, createdAt); err != nil {
 			return err
 		}
 		var reaction RealMoji
@@ -121,7 +123,6 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		cacheUploadedImage(imageID, data)
 		rememberUploadedImageMeta(imageID, actor, reaction.CreatedAt)
 		signed()
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))

@@ -122,6 +122,11 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 
+		// 本体はロックを取る前にディスクに書く（fsync の待ちで users の行ロックを延ばさない）
+		imageID := uuid.NewString()
+		if err := storeUploadedImage(imageID, imageData); err != nil {
+			return err
+		}
 		ctx := c.Request().Context()
 		tx, err := h.DB.BeginTxx(ctx, nil)
 		if err != nil {
@@ -142,12 +147,11 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		postedAt := time.Now().UTC()
-		imageID := uuid.NewString()
 		// 鍵と画像 id はここで決まるので、レスポンスの署名は INSERT・COMMIT と並行して取り寄せる（#77）。
 		// 取り寄せに失敗しても newPostResponse が手元で計算するだけ
 		signed := startPrefetchImageSignatures(ctx, appendImagesToSign(nil, user, imageID))
 		defer signed()
-		args := []any{binaryImage, user.ID, user.Region, imageID, imageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
+		args := []any{binaryImage, user.ID, user.Region, imageID, fileBackedImageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
 			location.Kind, location.Latitude, location.Longitude, location.Locality}
 		var post Post
 		err = tx.GetContext(ctx, &post, createPostQuery, args...)
@@ -165,7 +169,6 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		cacheUploadedImage(imageID, imageData)
 		rememberUploadedImageMeta(imageID, user.ID, post.PostedAt)
 		signed()
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))

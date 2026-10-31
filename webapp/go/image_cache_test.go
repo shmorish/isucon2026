@@ -147,3 +147,23 @@ func TestFromLocalNginx(t *testing.T) {
 		}
 	}
 }
+
+// アップロードされた画像は DB に空の data で入るので、DB から読んだ空の data はディスクの本体に置き換わる（#81）
+func TestUploadedImageReadsFromDiskWhenDBDataIsEmpty(t *testing.T) {
+	saved := imageDiskCacheDir
+	imageDiskCacheDir = t.TempDir()
+	defer func() { imageDiskCacheDir = saved }()
+	id := "0123abcd-0000-4000-8000-000000000081"
+	jpeg := []byte{0xff, 0xd8, 'x', 0xff, 0xd9}
+	if err := storeUploadedImage(id, jpeg); err != nil {
+		t.Fatal(err)
+	}
+	imageDataCache = newBoundedCache(imageDataCacheMaxBytes, func(v []byte) int { return len(v) })
+	got, err := imageDataFromDB(id, fileBackedImageData)
+	if err != nil || !bytes.Equal(got, jpeg) {
+		t.Fatalf("got %v, %v; want the stored file", got, err)
+	}
+	if _, err := imageDataFromDB("0123abcd-0000-4000-8000-000000000000", fileBackedImageData); err == nil {
+		t.Fatal("empty data without a file must be an error, not an empty image")
+	}
+}

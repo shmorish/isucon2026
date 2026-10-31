@@ -181,8 +181,11 @@ func fetchExportImages(ctx context.Context, db *sqlx.DB, posts []Post) (map[stri
 			return err
 		}
 		for _, r := range rows {
-			images[r.ID] = r.Data
-			putImageData(r.ID, r.Data)
+			data, err := imageDataFromDB(r.ID, r.Data)
+			if err != nil {
+				return err
+			}
+			images[r.ID] = data
 		}
 		missing = slices.DeleteFunc(missing, func(id string) bool { _, ok := images[id]; return ok })
 		return nil

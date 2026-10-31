@@ -312,16 +312,24 @@ func TestReadBodyExactMatchesReadAll(t *testing.T) {
 	}
 }
 
-func TestCacheUploadedImageKeepsExactBuffer(t *testing.T) {
+func TestStoreUploadedImageKeepsExactBuffer(t *testing.T) {
+	saved := imageDiskCacheDir
+	imageDiskCacheDir = t.TempDir()
+	defer func() { imageDiskCacheDir = saved }()
 	imageDataCache = newBoundedCache(imageDataCacheMaxBytes, func(v []byte) int { return len(v) })
+	const exactID, slackID = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
 	exact := make([]byte, 100, 100+uploadSlackBytes)
-	cacheUploadedImage("exact", exact)
-	if got, _ := imageDataCache.get("exact"); &got[0] != &exact[0] {
+	if err := storeUploadedImage(exactID, exact); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := imageDataCache.get(exactID); &got[0] != &exact[0] {
 		t.Fatal("exact-size buffer was copied")
 	}
 	slack := make([]byte, 100, 100+uploadSlackBytes+1)
-	cacheUploadedImage("slack", slack)
-	if got, _ := imageDataCache.get("slack"); &got[0] == &slack[0] || cap(got)-len(got) > uploadSlackBytes {
+	if err := storeUploadedImage(slackID, slack); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := imageDataCache.get(slackID); &got[0] == &slack[0] || cap(got)-len(got) > uploadSlackBytes {
 		t.Fatalf("buffer with slack was kept (cap %d)", cap(got))
 	}
 }

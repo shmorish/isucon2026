@@ -125,8 +125,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
 		}
 		if !cached {
-			data = meta.Data
-			putImageData(input.ImageID, data)
+			if data, err = imageDataFromDB(input.ImageID, meta.Data); err != nil {
+				return err
+			}
 		}
 		if exp <= time.Now().Unix() {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
@@ -257,14 +258,74 @@ func init() {
 	}
 }
 
-// アップロードを受けたサーバーでは、コミットが成功してから DB に書いたのと同じバイト列を入れる。
-// 読み込みは Content-Length で1回だけ確保するので（upload_read.go）余りは数 KB で、そのまま入れる。
-// 長さが分からず伸ばしながら読んだときだけ、余った容量まで抱えないようにコピーする
-func cacheUploadedImage(id string, data []byte) {
+// アップロードされた画像の本体は DB に入れず、s1 のディスクにだけ置く（#81）。DB の image_objects には空の data で行を入れる。
+// bytea の INSERT が投稿作成の大半（平均 180〜250ms、WAL と TOAST の拡張ロック）を占めていたため。
+// API の処理は s1 だけ（s2・s3 の nginx は /api/ を s1 に送る）なので、ファイルは s1 にあればよい。
+// 再起動後も読めるよう、DB に行を入れる前に fsync してから rename し、ディレクトリも fsync する。
+// DB の書き込みが失敗したときのファイルは残るが、DB に行がないので 403 になるだけ
+var fileBackedImageData = []byte{}
+
+func storeUploadedImage(id string, data []byte) error {
+	path, ok := imageDiskPath(id)
+	if !ok {
+		return errors.New("invalid image id")
+	}
+	if err := writeImageFileDurable(path, data); err != nil {
+		return err
+	}
+	// 見てよいかは毎回 DB で判定するので、コミット前に入れてよい。読み込みは Content-Length で1回だけ確保するので
+	// （upload_read.go）余りは数 KB。長さが分からず伸ばしながら読んだときだけ、余った容量まで抱えないようにコピーする
 	if cap(data)-len(data) > uploadSlackBytes {
 		data = bytes.Clone(data)
 	}
-	putImageData(id, data)
+	imageDataCache.put(id, data)
+	return nil
+}
+
+func writeImageFileDurable(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	err = tmp.Chmod(0o644)
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// imageDataFromDB は DB から読んだ data を返す。空ならアップロードされた画像なので、ディスクから読む
+func imageDataFromDB(id string, data []byte) ([]byte, error) {
+	if len(data) > 0 {
+		putImageData(id, data)
+		return data, nil
+	}
+	if data, ok := getImageData(id); ok {
+		return data, nil
+	}
+	return nil, errors.New("image file missing: " + id)
 }
 
 // 画像本体はディスクにも持つ（#65）。本体は作成後に変わらず id も使い回されないので古くならない。
