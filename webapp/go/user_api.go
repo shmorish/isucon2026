@@ -97,10 +97,10 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		// Not folded into the lock statement: the existence check needs a snapshot taken after the username lock is granted.
 		var user User
-		err = tx.GetContext(ctx, &user, `INSERT INTO users (id, username, secret_key_hash, display_name, region)
-			SELECT $1, $2::text, $3, $4, $5 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $2::text)
+		err = tx.GetContext(ctx, &user, `INSERT INTO users (id, username, secret_key_hash, display_name, region, display_name_search)
+			SELECT $1, $2::text, $3, $4, $5, $6 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $2::text)
 			RETURNING `+strings.Join(userColumns, ", "),
-			uuid.NewString(), input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region)
+			uuid.NewString(), input.Username, hex.EncodeToString(hash[:]), input.DisplayName, input.Region, normalizeSearchText(input.DisplayName))
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusConflict, "username_taken")
 		}
@@ -214,7 +214,7 @@ func updateMeHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 		}
 		if input.DisplayName != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE users SET display_name = $2, updated_at = clock_timestamp() WHERE id = $1`, session.UserID, *input.DisplayName); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET display_name = $2, display_name_search = $3, updated_at = clock_timestamp() WHERE id = $1`, session.UserID, *input.DisplayName, normalizeSearchText(*input.DisplayName)); err != nil {
 				return err
 			}
 		}
