@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -218,15 +219,31 @@ func (viewer viewerContext) canView(post Post) bool {
 	}
 }
 
+// loadPostAndViewer は投稿と閲覧者情報を取る。トランザクションの外なら2本を同時に投げる。
+func loadPostAndViewer(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (post PostWithAuthor, postErr error, viewer viewerContext, viewerErr error) {
+	if _, inTx := db.(*sqlx.Tx); inTx {
+		post, postErr = getPostWithAuthor(ctx, db, postID)
+		if postErr == nil {
+			viewer, viewerErr = loadViewerContext(ctx, db, viewerID)
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Go(func() { viewer, viewerErr = loadViewerContext(ctx, db, viewerID) })
+	post, postErr = getPostWithAuthor(ctx, db, postID)
+	wg.Wait()
+	return
+}
+
 func canViewPost(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (bool, error) {
-	post, err := getPostWithAuthor(ctx, db, postID)
+	post, err, viewer, viewerErr := loadPostAndViewer(ctx, db, viewerID, postID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	viewer, err := loadViewerContext(ctx, db, viewerID)
+	err = viewerErr
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

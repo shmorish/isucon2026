@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -134,15 +135,22 @@ func getRealMojisHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusBadRequest, "invalid_pagination")
 		}
 		ctx := c.Request().Context()
+		// 一覧は権限の確認と同時に取り、権限がなければ捨てる
+		var reactions []RealMojiWithReactor
+		var listErr error
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			reactions, listErr = selectCurrentRealMojis(ctx, h.DB, `AND r.post_id=$1 AND ($2::timestamptz IS NULL OR (r.created_at,r.id)<($2,$3)) ORDER BY r.created_at DESC,r.id DESC LIMIT 51`, input.PostID, input.BeforeCreatedAt, input.BeforeID)
+		})
 		allowed, err := canViewPost(ctx, h.DB, GetSession(c).UserID, input.PostID)
+		wg.Wait()
 		if err != nil {
 			return err
 		}
 		if !allowed {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
-		reactions, err := selectCurrentRealMojis(ctx, h.DB, `AND r.post_id=$1 AND ($2::timestamptz IS NULL OR (r.created_at,r.id)<($2,$3)) ORDER BY r.created_at DESC,r.id DESC LIMIT 51`, input.PostID, input.BeforeCreatedAt, input.BeforeID)
-		if err != nil {
+		if err := listErr; err != nil {
 			return err
 		}
 		items := make([]replaceRealMojiResponse, 0, len(reactions))

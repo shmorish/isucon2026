@@ -46,14 +46,14 @@ func selectCommentsWithAuthor(ctx context.Context, db sqlx.QueryerContext, condi
 }
 
 func canComment(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (bool, error) {
-	post, err := getPostWithAuthor(ctx, db, postID)
+	post, err, viewer, viewerErr := loadPostAndViewer(ctx, db, viewerID, postID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	viewer, err := loadViewerContext(ctx, db, viewerID)
+	err = viewerErr
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
