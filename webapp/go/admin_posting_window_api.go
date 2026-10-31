@@ -57,13 +57,13 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.GetContext(ctx, &startsAt, `SELECT clock_timestamp()`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE posting_windows SET ended_at = $2 WHERE region = $1 AND ended_at IS NULL`, region, startsAt); err != nil {
-			return err
-		}
+		// Ending the current window row-locks it until commit, and posts in the region wait on that lock (FOR SHARE).
+		// So the new window is inserted as ended (clear of posting_windows_one_active_region), the notifications go in,
+		// and only then is the current window ended and the new one made active.
 		windowID := uuid.NewString()
 		if _, err := tx.ExecContext(ctx, `
-   INSERT INTO posting_windows (id, region, local_date, starts_at, on_time_deadline)
-   VALUES ($1, $2, $3, $4, $5)
+   INSERT INTO posting_windows (id, region, local_date, starts_at, on_time_deadline, ended_at)
+   VALUES ($1, $2, $3, $4, $5, $4)
   `, windowID, region, localDate, startsAt, startsAt.Add(time.Duration(seconds)*time.Second)); err != nil {
 			return err
 		}
@@ -71,6 +71,12 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
    INSERT INTO notifications (id, user_id, posting_window_id, created_at)
    SELECT gen_random_uuid()::text, id, $2, $3 FROM users WHERE region = $1 AND status = 'active'
   `, region, windowID, startsAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE posting_windows SET ended_at = $2 WHERE region = $1 AND ended_at IS NULL`, region, startsAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE posting_windows SET ended_at = NULL WHERE id = $1`, windowID); err != nil {
 			return err
 		}
 		window, err := getPostingWindow(ctx, tx, windowID)
