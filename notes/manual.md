@@ -34,6 +34,16 @@ Claude はこのファイルの制約を最優先で守る。原文は `notes/ma
 - レスポンスは空でない `language` を含める（`lang` ではない）。例: `{"language":"go","agent":"human","harness":"manual","model":"brain"}`。agent/harness/model は申告用で採点に無関係（Claude を使うなら合わせて書き換える）
 
 ## サーバー構成
+
+| name | Public IPv4 | Private IPv4 | 役割 |
+|---|---|---|---|
+| asia1 | 54.95.114.0 | 192.168.1.10 | nginx + Go（asia） |
+| europe1 | 13.192.87.109 | 192.168.2.10 | nginx + Go（europe） |
+| america1 | 52.194.148.157 | 192.168.3.10 | nginx + Go（america） |
+| asia2 | 35.74.60.222 | 192.168.4.10 | PostgreSQL 16（asia） |
+
+SSH: `ssh isucon@<Public IPv4>`
+
 - asia1（nginx + Go、asia）、europe1（nginx + Go、europe）、america1（nginx + Go、america）、asia2（共有 PostgreSQL 16、asia）、ルーター（触れない）
 - ルーターが `X-Country-Code` でリージョン別に振り分ける（省略時は JP → asia1）。リージョン間には遅延と帯域制限あり。asia1 と asia2 は同一リージョン扱い
 - クライアント IP は `X-Client-IP` を使う
