@@ -52,7 +52,7 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		defer tx.Rollback()
 		for _, id := range slices.Compact([]string{min(actor, post.AuthorID), max(actor, post.AuthorID)}) {
 			var lockedID string
-			if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE`, id); err != nil {
+			if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR SHARE`, id); err != nil {
 				return err
 			}
 		}
