@@ -260,8 +260,8 @@ func updatePostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		var lockedUserID string
-		if err := tx.GetContext(ctx, &lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
+		user, err := lockUser(ctx, tx, userID)
+		if err != nil {
 			return err
 		}
 		post, err := getPost(ctx, tx, input.PostID)
@@ -274,29 +274,17 @@ func updatePostHandler(h *HandlerContext) echo.HandlerFunc {
 		if post.AuthorID != userID {
 			return NewAPIError(http.StatusForbidden, "post_not_editable")
 		}
-		window, err := getPostingWindow(ctx, tx, post.PostingWindowID)
-		if err != nil {
-			return err
-		}
-		if window.EndedAt != nil {
+		if post.WindowEndedAt != nil {
 			return NewAPIError(http.StatusForbidden, "post_not_editable")
 		}
-		if input.Caption != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE posts SET caption = $2 WHERE id = $1`, post.ID, *input.Caption); err != nil {
-				return err
-			}
-		}
-		if input.Visibility != nil {
-			if _, err := tx.ExecContext(ctx, `UPDATE posts SET visibility = $2 WHERE id = $1`, post.ID, *input.Visibility); err != nil {
-				return err
-			}
-		}
-		post, err = getPost(ctx, tx, post.ID)
-		if err != nil {
+		if err := tx.GetContext(ctx, &post, `
+   UPDATE posts p SET caption = COALESCE($2, p.caption), visibility = COALESCE($3, p.visibility)
+   FROM posting_windows w
+   WHERE p.id = $1 AND w.id = p.posting_window_id
+   RETURNING `+postColumns, post.ID, input.Caption, input.Visibility); err != nil {
 			return err
 		}
-		user, err := getUser(ctx, tx, userID)
-		if err != nil {
+		if err := user.requireActive(); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
