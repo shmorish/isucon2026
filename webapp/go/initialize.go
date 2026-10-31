@@ -32,8 +32,6 @@ func initializeHandler(h *HandlerContext) echo.HandlerFunc {
 		// ならないよう、空いている接続を捨てて文を作り直させる
 		h.DB.SetMaxIdleConns(0)
 		h.DB.SetMaxIdleConns(dbPoolSize(h.Config.Region))
-		h.NotifyDB.SetMaxIdleConns(0)
-		h.NotifyDB.SetMaxIdleConns(notifyPoolSize)
 
 		// Set language to the implementation language.
 		// Agents optimizing this app: set agent, harness, and model to the names used.

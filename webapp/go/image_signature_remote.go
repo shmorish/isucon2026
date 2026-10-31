@@ -31,12 +31,11 @@ var imageSigners = strings.FieldsFunc(os.Getenv("ISUREAL_IMAGE_SIGNERS"), func(r
 const imageSignatureExpWindow = 3
 
 // 空いているときは、往復 100ms より手元の計算（1枚 0.45ms）が速い小さなレスポンスは任せない。
-// 混んでいるとき（処理中のリクエストが imageSignBusyInflight 以上）は CPU のほうが貴重なので少ない枚数から任せるが、
-// 1枚から任せると負荷中は画像1枚のレスポンス（GET /api/me など 約9,500件）すべてに 100ms の往復が乗っていた（#91）。
-// 7枚以下（手元で 3ms ほど）は混んでいても手元で計算する
-const imageSignaturePrefetchMin = 16
-
-var imageSignaturePrefetchMinBusy = envInt("ISUREAL_IMAGE_SIGN_PREFETCH_MIN_BUSY", 8)
+// 混んでいるとき（処理中のリクエストが imageSignBusyInflight 以上）は CPU のほうが貴重なので 1枚から任せる
+const (
+	imageSignaturePrefetchMin     = 16
+	imageSignaturePrefetchMinBusy = 1
+)
 
 var imageSignBusyInflight = envInt("ISUREAL_IMAGE_SIGN_BUSY_INFLIGHT", 16)
 

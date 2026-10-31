@@ -60,7 +60,6 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		revokeProfileImage(old)
 		rememberUploadedImageMeta(imageID, userID, createdAt)
 		return c.NoContent(http.StatusNoContent)
 	}
@@ -102,13 +101,6 @@ func deleteImageObject(ctx context.Context, tx *sqlx.Tx, ref profileImageRef) er
 	return err
 }
 
-// revokeProfileImage は外したプロフィール画像を、コミットの後に「見せてよい」画像から外す（#89）
-func revokeProfileImage(ref profileImageRef) {
-	if ref.ImageID != nil {
-		imageVisibility.revoke(*ref.ImageID)
-	}
-}
-
 func deleteProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		ctx := c.Request().Context()
@@ -138,7 +130,6 @@ func deleteProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		revokeProfileImage(current)
 		return c.NoContent(http.StatusNoContent)
 	}
 }

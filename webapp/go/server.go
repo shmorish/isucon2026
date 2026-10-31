@@ -17,23 +17,18 @@ type HandlerContext struct {
 	Config        *Config
 	IPBans        *IPBanList
 	Notifications *notificationHub
-	NotifyDB      *sqlx.DB
 }
 
 // s1 (asia) は全リージョンの /api を処理するので 60。150 にした 14:35 のベンチ (#58 のコメント) では、460KB の画像を
 // INSERT する投稿が同時に約 70 本走って WAL と BufferContent の待ちが増え、投稿の INSERT が 29ms → 252ms、通知の INSERT が
 // 13〜17 倍、投稿期間を開く API が 1.4〜4.1 秒になって、asia の人数が 766 → 349 に落ちた。s1 のプール待ちは s1 の CPU 詰まりの
 // 結果で、本数を増やしても DB が処理できる量は増えない。s2・s3 は画像のキャッシュミスだけで同時 1 本しか使わないので 10
-// その後、画像を DB の外に出し (#81)、通知の INSERT もやめた (#82) ので、WAL の待ちの元が消えた。60 のときは s1 の
-// プール待ちが 181,092 回・平均 0.2 秒あり、s4 の CPU は平均 34%、s1 の CPU も 2 コアの約 3 割だったので 120 にする
 func dbPoolSize(region string) int {
 	if region == "asia" {
-		return 120
+		return 60
 	}
 	return 10
 }
-
-const notifyPoolSize = 8
 
 func NewServer(config *Config) *echo.Echo {
 	if !validRegion(config.Region) {
@@ -71,15 +66,7 @@ func NewServer(config *Config) *echo.Echo {
 		Config: config,
 		IPBans: &IPBanList{},
 	}
-	// 通知の購読（セッションの確認）と 200ms ごとのポーリングは専用の接続を使う。120 本のプールが埋まる最終日に、
-	// 購読がプール待ちで返らずルーターが 503 を返し、購読できなかった利用者は最終日の通知を受け取れなかった
-	notifyDB := sqlx.NewDb(stdlib.OpenDB(*pgxConfig, stdlib.OptionShouldPing(shouldPingIdleConn)), "pgx")
-	notifyDB.SetMaxOpenConns(notifyPoolSize)
-	notifyDB.SetMaxIdleConns(notifyPoolSize)
-	handlerContext.NotifyDB = notifyDB
-	notifyContext := *handlerContext
-	notifyContext.DB = notifyDB
-	handlerContext.Notifications = newNotificationHub(notifyDB, e.Logger)
+	handlerContext.Notifications = newNotificationHub(db, e.Logger)
 	go handlerContext.Notifications.run()
 	go handlerContext.IPBans.run(db, e.Logger)
 	e.Use(IPBanMiddleware(handlerContext))
@@ -113,7 +100,7 @@ func NewServer(config *Config) *echo.Echo {
 	e.DELETE("/api/realmojis/:realMojiId", deleteRealMojiHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.GET("/api/images/:imageId", getImageHandler(handlerContext))
 	e.POST("/api/internal/image-signatures", signImagesHandler)
-	e.GET("/api/notifications", getNotificationsHandler(handlerContext), SessionMiddleware(&notifyContext, true), RegionMiddleware(handlerContext))
+	e.GET("/api/notifications", getNotificationsHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.POST("/api/friend-requests", createFriendRequestHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.POST("/api/friend-requests/:requestId/:action", transitionFriendRequestHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.GET("/api/relationships/:kind", getRelationshipsHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))

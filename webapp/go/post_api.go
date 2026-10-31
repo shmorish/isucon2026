@@ -383,7 +383,6 @@ func deletePostHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		revokePostImages(ctx, h.DB, input.PostID)
 		return c.NoContent(http.StatusNoContent)
 	}
 }

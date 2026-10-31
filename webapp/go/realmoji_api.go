@@ -39,7 +39,7 @@ func newRealMojiResponse(reaction RealMoji, user User) replaceRealMojiResponse {
 const (
 	replaceRealMojiImageQuery = `
    WITH image AS (INSERT INTO image_objects(id,owner_user_id,data,media_type,created_at) VALUES($3,$2,$4,'image/jpeg',$5))
-   UPDATE realmojis SET replaced_at=clock_timestamp() WHERE post_id=$1 AND reactor_id=$2 AND replaced_at IS NULL AND deleted_at IS NULL RETURNING image_id`
+   UPDATE realmojis SET replaced_at=clock_timestamp() WHERE post_id=$1 AND reactor_id=$2 AND replaced_at IS NULL AND deleted_at IS NULL`
 	createRealMojiQuery = `INSERT INTO realmojis(id,post_id,reactor_id,image_id,reaction_type,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING ` + realMojiColumns
 )
 
@@ -113,9 +113,7 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		defer signed()
 		// The new realmoji is inserted in a separate statement: in one statement the
 		// replacement UPDATE could run after it and hit realmojis_one_active.
-		// 差し替えられた RealMoji の画像はコミットの後に「見せてよい」画像から外す（#89）
-		var replacedImageIDs []string
-		if err := tx.SelectContext(ctx, &replacedImageIDs, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, fileBackedImageData, createdAt); err != nil {
+		if _, err := tx.ExecContext(ctx, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, fileBackedImageData, createdAt); err != nil {
 			return err
 		}
 		var reaction RealMoji
@@ -125,7 +123,6 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		imageVisibility.revoke(replacedImageIDs...)
 		rememberUploadedImageMeta(imageID, actor, reaction.CreatedAt)
 		signed()
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))
@@ -211,9 +208,8 @@ func deleteRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		var record struct {
 			ReactorID string `db:"reactor_id"`
 			AuthorID  string `db:"author_id"`
-			ImageID   string `db:"image_id"`
 		}
-		err = tx.GetContext(ctx, &record, `SELECT r.reactor_id,p.author_id,r.image_id FROM realmojis r JOIN posts p ON p.id=r.post_id WHERE r.id=$1 AND r.deleted_at IS NULL FOR UPDATE OF r`, input.RealMojiID)
+		err = tx.GetContext(ctx, &record, `SELECT r.reactor_id,p.author_id FROM realmojis r JOIN posts p ON p.id=r.post_id WHERE r.id=$1 AND r.deleted_at IS NULL FOR UPDATE OF r`, input.RealMojiID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusNotFound, "interaction_not_found")
 		}
@@ -229,7 +225,6 @@ func deleteRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		imageVisibility.revoke(record.ImageID)
 		return c.NoContent(http.StatusNoContent)
 	}
 }
