@@ -1,6 +1,14 @@
 -- 追加インデックス（init.sh は reset.sql しか流さないのでここに書く）
 CREATE INDEX IF NOT EXISTS realmojis_image_id ON realmojis(image_id);
 CREATE INDEX IF NOT EXISTS posts_image_id ON posts(image_id);
+CREATE INDEX IF NOT EXISTS login_sessions_token_hash ON login_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS login_sessions_user_id_active ON login_sessions(user_id) WHERE active;
+CREATE INDEX IF NOT EXISTS users_username ON users(username);
+CREATE INDEX IF NOT EXISTS friendships_user_high_id ON friendships(user_high_id);
+CREATE INDEX IF NOT EXISTS block_relations_blocked_id ON block_relations(blocked_id);
+CREATE INDEX IF NOT EXISTS follows_followee_id ON follows(followee_id);
+CREATE INDEX IF NOT EXISTS friend_requests_recipient_id_status ON friend_requests(recipient_id, status);
+CREATE INDEX IF NOT EXISTS friend_requests_requester_id_status ON friend_requests(requester_id, status);
 
 SET session_replication_role = replica;
 
