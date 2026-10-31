@@ -41,7 +41,7 @@ func selectCommentsWithAuthor(ctx context.Context, db sqlx.QueryerContext, condi
 	return comments, nil
 }
 
-func canComment(ctx context.Context, db *sqlx.DB, viewerID, postID string) (bool, error) {
+func canComment(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (bool, error) {
 	post, viewer, found, err := loadPostAndViewer(ctx, db, viewerID, postID)
 	if err != nil {
 		return false, err
@@ -80,42 +80,4 @@ func beginTxWithPost(ctx context.Context, db *sqlx.DB, postID string) (*sqlx.Tx,
 		return tx, post, err
 	}
 	return tx, post, txErr
-}
-
-// loadPostAndViewerTx returns what loadPostAndViewer returns, but inside a
-// transaction and in one statement instead of two. found is false when
-// either the post or the viewer is missing.
-func loadPostAndViewerTx(ctx context.Context, tx *sqlx.Tx, viewerID, postID string) (post PostWithAuthor, viewer viewerContext, found bool, err error) {
-	var row struct {
-		PostWithAuthor
-		Viewer            User            `db:"viewer"`
-		HasPostedToday    bool            `db:"has_posted_today"`
-		BlockedIDs        jsonStrings     `db:"blocked_ids"`
-		FriendIDs         jsonStrings     `db:"friend_ids"`
-		FriendFriendships jsonStringPairs `db:"friend_friendships"`
-	}
-	err = tx.GetContext(ctx, &row, `
-  WITH v AS (`+viewerContextQuery+`)
-  SELECT `+postColumns+`, `+userColumnsAs("u", "author")+`, `+userColumnsAs("v", "viewer")+`,
-    v.has_posted_today, v.blocked_ids, v.friend_ids, v.friend_friendships
-  FROM posts p
-  JOIN posting_windows w ON w.id = p.posting_window_id
-  JOIN users u ON u.id = p.author_id AND u.status = 'active'
-  CROSS JOIN v
-  WHERE p.deleted_at IS NULL AND p.id = $2`, viewerID, postID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return post, viewer, false, nil
-	}
-	if err != nil {
-		return post, viewer, false, err
-	}
-	post = row.PostWithAuthor
-	if err := post.Author.setImageKey(); err != nil {
-		return post, viewer, false, err
-	}
-	viewer, err = newViewerContext(viewerContextRow{User: row.Viewer, HasPostedToday: row.HasPostedToday, BlockedIDs: row.BlockedIDs, FriendIDs: row.FriendIDs, FriendFriendships: row.FriendFriendships})
-	if err != nil {
-		return post, viewer, false, err
-	}
-	return post, viewer, true, nil
 }

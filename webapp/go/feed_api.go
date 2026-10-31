@@ -53,7 +53,9 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ranked := input.Feed == "friends-of-friends"
 		ctx := c.Request().Context()
-		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c))
+		// Only the ranked feed filters by the whole friends-of-friends set and scores by mutual friends. The
+		// following feed checks friends of friends per author below; friends and public never need them.
+		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c), ranked)
 		if err := foldedSessionResult(c, h, err, row.sessionColumns); err != nil {
 			return err
 		}
@@ -87,6 +89,11 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
   `, append([]any{viewer.ID, beforePostedAt, beforeID}, feedArgs...)...)
 		if err != nil {
 			return err
+		}
+		if input.Feed == "following" {
+			if err := viewer.loadFriendsOfFriends(ctx, h.DB, friendsOfFriendsToCheck(viewer, posts)); err != nil {
+				return err
+			}
 		}
 		candidates := make([]PostWithAuthor, 0)
 		for _, post := range posts {
@@ -210,6 +217,21 @@ func feedCandidateFilter(viewer viewerContext, following map[string]bool, feed s
 	default:
 		return "", nil
 	}
+}
+
+// friendsOfFriendsToCheck lists the authors whose canView reads FriendsOfFriends: non-friends with a
+// friends_of_friends post. The other visibilities and friends never reach that lookup.
+func friendsOfFriendsToCheck(viewer viewerContext, posts []PostWithAuthor) []string {
+	seen := map[string]bool{}
+	var authorIDs []string
+	for _, post := range posts {
+		if post.Visibility != "friends_of_friends" || post.AuthorID == viewer.ID || viewer.Friends[post.AuthorID] || seen[post.AuthorID] {
+			continue
+		}
+		seen[post.AuthorID] = true
+		authorIDs = append(authorIDs, post.AuthorID)
+	}
+	return authorIDs
 }
 
 func mapKeys(set map[string]bool) []string {

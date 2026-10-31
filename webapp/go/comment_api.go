@@ -55,7 +55,7 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		if !firstID.Valid || !secondID.Valid {
 			return sql.ErrNoRows
 		}
-		current, viewer, found, err := loadPostAndViewerTx(ctx, tx, actor, post.ID)
+		current, viewer, found, err := loadPostAndViewer(ctx, tx, actor, post.ID)
 		if err != nil {
 			return err
 		}

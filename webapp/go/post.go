@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -127,14 +126,54 @@ func scanJSON(src any, dest any) error {
 	}
 }
 
-var viewerContextQuery = viewerContextSQL("", "$1", "", "")
-
-// viewerContextBySessionQuery is viewerContextQuery for the viewer of the session whose token hash is $1.
+// viewerContextBySessionQuery is the viewer context for the viewer of the session whose token hash is $1.
 // sess and me use the same active-user conditions, so a valid session always has its me row.
-var viewerContextBySessionQuery = viewerContextSQL(sessionCTE+", ", "(SELECT user_id FROM sess)", sessionSelect+", ", "sess, ")
+var viewerContextBySessionQuery = viewerContextSQL(sessionCTE+", ", "(SELECT user_id FROM sess)", "me.*", sessionSelect+", ", "sess, ", false)
+
+// viewerContextWithFriendFriendshipsBySessionQuery is viewerContextBySessionQuery plus every friendship of the
+// viewer's friends (FriendsOfFriends and MutualFriends).
+var viewerContextWithFriendFriendshipsBySessionQuery = viewerContextSQL(sessionCTE+", ", "(SELECT user_id FROM sess)", "me.*", sessionSelect+", ", "sess, ", true)
+
+// friendOfFriendSQL is true when author is a friend of one of the viewer's friends (friendIDs is an array
+// expression). Both sides of an edge are tried, the same way addFriendFriendships reads friend_friendships.
+// The author's edges are read first and the other end compared as a CASE expression: written as
+// (low = author AND high = ANY(friendIDs)) OR ..., the planner probes the index once per friend (816 buffers
+// for 272 friends) instead of once per author edge.
+func friendOfFriendSQL(author, friendIDs string) string {
+	return `EXISTS (
+      SELECT 1 FROM (
+        SELECT CASE WHEN f.user_low_id = ` + author + ` THEN f.user_high_id ELSE f.user_low_id END AS id
+        FROM friendships f WHERE f.user_low_id = ` + author + ` OR f.user_high_id = ` + author + `
+      ) other WHERE other.id = ANY(` + friendIDs + `)
+    )`
+}
+
+// postAndViewerQuery reads the post $2 (with its active author) and the viewer $1 in one statement, with
+// author_friend_of_friend standing in for FriendsOfFriends[author]. No row when either is missing.
+var postAndViewerQuery = viewerContextSQL(`post AS (
+    SELECT `+postColumns+`, `+userColumnsAs("u", "author")+`
+    FROM posts p
+    JOIN posting_windows w ON w.id = p.posting_window_id
+    JOIN users u ON u.id = p.author_id AND u.status = 'active'
+    WHERE p.deleted_at IS NULL AND p.id = $2
+  ), `, "$1", userColumnsAs("me", "viewer"),
+	`post.*, `+friendOfFriendSQL("post.author_id", "ARRAY(SELECT id FROM friend_ids)")+` AS author_friend_of_friend, `,
+	"post, ", false)
 
 // "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
-func viewerContextSQL(with, viewerID, extraColumns, extraFrom string) string {
+//
+// friendFriendships adds friend_friendships, every friendship of the viewer's friends. It reads about one heap
+// block per edge (272 friends: 5245 rows, 1991 buffers, 34 of 35 ms on s4), so only the ranked feed asks for it;
+// the other readers check friends of friends per author with friendOfFriendSQL.
+func viewerContextSQL(with, viewerID, viewerColumns, extraColumns, extraFrom string, friendFriendships bool) string {
+	friendFriendshipsColumn := ""
+	if friendFriendships {
+		friendFriendshipsColumn = `,
+    COALESCE((
+      SELECT json_agg(json_build_array(user_low_id, user_high_id)) FROM friendships
+      WHERE user_low_id = ANY(ARRAY(SELECT id FROM friend_ids)) OR user_high_id = ANY(ARRAY(SELECT id FROM friend_ids))
+    ), '[]'::json) AS friend_friendships`
+	}
 	return `
   WITH ` + with + `me AS (
     SELECT ` + strings.Join(userColumns, ", ") + ` FROM users WHERE id = ` + viewerID + ` AND status = 'active'
@@ -142,7 +181,7 @@ func viewerContextSQL(with, viewerID, extraColumns, extraFrom string) string {
     SELECT CASE WHEN user_low_id = ` + viewerID + ` THEN user_high_id ELSE user_low_id END AS id
     FROM friendships WHERE user_low_id = ` + viewerID + ` OR user_high_id = ` + viewerID + `
   )
-  SELECT ` + extraColumns + `me.*,
+  SELECT ` + extraColumns + viewerColumns + `,
     EXISTS(
       SELECT 1 FROM posts p
       JOIN posting_windows posted ON posted.id = p.posting_window_id
@@ -154,11 +193,7 @@ func viewerContextSQL(with, viewerID, extraColumns, extraFrom string) string {
       SELECT json_agg(CASE WHEN blocker_id = ` + viewerID + ` THEN blocked_id ELSE blocker_id END)
       FROM block_relations WHERE blocker_id = ` + viewerID + ` OR blocked_id = ` + viewerID + `
     ), '[]'::json) AS blocked_ids,
-    COALESCE((SELECT json_agg(id) FROM friend_ids), '[]'::json) AS friend_ids,
-    COALESCE((
-      SELECT json_agg(json_build_array(user_low_id, user_high_id)) FROM friendships
-      WHERE user_low_id = ANY(ARRAY(SELECT id FROM friend_ids)) OR user_high_id = ANY(ARRAY(SELECT id FROM friend_ids))
-    ), '[]'::json) AS friend_friendships
+    COALESCE((SELECT json_agg(id) FROM friend_ids), '[]'::json) AS friend_ids` + friendFriendshipsColumn + `
   FROM ` + extraFrom + `me
 `
 }
@@ -171,14 +206,6 @@ type viewerContextRow struct {
 	FriendFriendships jsonStringPairs `db:"friend_friendships"`
 }
 
-func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
-	var row viewerContextRow
-	if err := sqlx.GetContext(ctx, db, &row, viewerContextQuery, viewerID); err != nil {
-		return viewerContext{}, err
-	}
-	return newViewerContext(row)
-}
-
 type viewerContextBySessionRow struct {
 	sessionColumns
 	viewerContextRow
@@ -186,9 +213,14 @@ type viewerContextBySessionRow struct {
 
 // selectViewerContextBySession returns sql.ErrNoRows when the session is not valid. The caller checks the session
 // (acceptFoldedSession) before newViewerContext, whose errors must not win over 403 region_mismatch.
-func selectViewerContextBySession(ctx context.Context, db sqlx.QueryerContext, tokenHash string) (viewerContextBySessionRow, error) {
+// Without friendFriendships the context knows no friends of friends until loadFriendsOfFriends.
+func selectViewerContextBySession(ctx context.Context, db sqlx.QueryerContext, tokenHash string, friendFriendships bool) (viewerContextBySessionRow, error) {
+	query := viewerContextBySessionQuery
+	if friendFriendships {
+		query = viewerContextWithFriendFriendshipsBySessionQuery
+	}
 	var row viewerContextBySessionRow
-	err := sqlx.GetContext(ctx, db, &row, viewerContextBySessionQuery, tokenHash)
+	err := sqlx.GetContext(ctx, db, &row, query, tokenHash)
 	return row, err
 }
 
@@ -228,6 +260,22 @@ func (viewer viewerContext) addFriendFriendships(friendships [][2]string) {
 	}
 }
 
+// loadFriendsOfFriends marks which of authorIDs are friends of the viewer's friends, for a context loaded without
+// friend friendships. It does not count MutualFriends.
+func (viewer viewerContext) loadFriendsOfFriends(ctx context.Context, db sqlx.QueryerContext, authorIDs []string) error {
+	if len(authorIDs) == 0 {
+		return nil
+	}
+	var ids []string
+	if err := sqlx.SelectContext(ctx, db, &ids, `SELECT a.id FROM unnest($1::text[]) a(id) WHERE `+friendOfFriendSQL("a.id", "$2::text[]"), authorIDs, mapKeys(viewer.Friends)); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		viewer.FriendsOfFriends[id] = true
+	}
+	return nil
+}
+
 func (viewer viewerContext) canView(post Post) bool {
 	if post.AuthorID == viewer.ID {
 		return true
@@ -247,31 +295,41 @@ func (viewer viewerContext) canView(post Post) bool {
 	}
 }
 
-// loadPostAndViewer reads the post and the viewer with two concurrent
-// statements. found is false when either the post or the viewer is missing.
-// A missing post wins over any viewer error.
-func loadPostAndViewer(ctx context.Context, db *sqlx.DB, viewerID, postID string) (post PostWithAuthor, viewer viewerContext, found bool, err error) {
-	var viewerErr error
-	var wg sync.WaitGroup
-	wg.Go(func() { viewer, viewerErr = loadViewerContext(ctx, db, viewerID) })
-	post, err = getPostWithAuthor(ctx, db, postID)
-	wg.Wait()
+type postAndViewerRow struct {
+	PostWithAuthor
+	Viewer               User        `db:"viewer"`
+	HasPostedToday       bool        `db:"has_posted_today"`
+	BlockedIDs           jsonStrings `db:"blocked_ids"`
+	FriendIDs            jsonStrings `db:"friend_ids"`
+	AuthorFriendOfFriend bool        `db:"author_friend_of_friend"`
+}
+
+// loadPostAndViewer reads the post and the viewer in one statement (postAndViewerQuery). found is false when
+// either the post or the viewer is missing. The viewer knows FriendsOfFriends for the post's author only.
+func loadPostAndViewer(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (post PostWithAuthor, viewer viewerContext, found bool, err error) {
+	var row postAndViewerRow
+	err = sqlx.GetContext(ctx, db, &row, postAndViewerQuery, viewerID, postID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return post, viewer, false, nil
 	}
 	if err != nil {
 		return post, viewer, false, err
 	}
-	if errors.Is(viewerErr, sql.ErrNoRows) {
-		return post, viewer, false, nil
+	post = row.PostWithAuthor
+	if err := post.Author.setImageKey(); err != nil {
+		return post, viewer, false, err
 	}
-	if viewerErr != nil {
-		return post, viewer, false, viewerErr
+	viewer, err = newViewerContext(viewerContextRow{User: row.Viewer, HasPostedToday: row.HasPostedToday, BlockedIDs: row.BlockedIDs, FriendIDs: row.FriendIDs})
+	if err != nil {
+		return post, viewer, false, err
+	}
+	if row.AuthorFriendOfFriend {
+		viewer.FriendsOfFriends[post.AuthorID] = true
 	}
 	return post, viewer, true, nil
 }
 
-func canViewPost(ctx context.Context, db *sqlx.DB, viewerID, postID string) (bool, error) {
+func canViewPost(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (bool, error) {
 	post, viewer, found, err := loadPostAndViewer(ctx, db, viewerID, postID)
 	if err != nil {
 		return false, err
