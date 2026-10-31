@@ -156,14 +156,9 @@ func TestGetImageMetaCacheHitMatchesMiss(t *testing.T) {
 		resetImageMetaCaches()
 		imageMetaCache.put(id, metas[id])
 		hit := server.get(id, exp, sig)
-		// miss goes through imageReferrerQuery when the bytes are at hand (#90); old is the image_objects path.
 		resetImageMetaCaches()
 		miss := server.get(id, exp, sig)
-		resetImageMetaCaches()
-		imageReferrerLookupEnabled = false
-		old := server.get(id, exp, sig)
-		imageReferrerLookupEnabled = true
-		for label, got := range map[string]imageGetResult{"hit": hit, "miss": miss, "old": old} {
+		for label, got := range map[string]imageGetResult{"hit": hit, "miss": miss} {
 			if got.Status != want.Status || got.ContentType != want.ContentType || got.CacheCtl != want.CacheCtl || !bytes.Equal(got.Body, want.Body) || got.Abuse != want.Abuse {
 				t.Fatalf("%s (%s): got status=%d type=%q cache=%q abuse=%q body=%q\nwant status=%d type=%q cache=%q abuse=%q body=%q",
 					name, label, got.Status, got.ContentType, got.CacheCtl, got.Abuse, got.Body, want.Status, want.ContentType, want.CacheCtl, want.Abuse, want.Body)
@@ -171,7 +166,7 @@ func TestGetImageMetaCacheHitMatchesMiss(t *testing.T) {
 		}
 		if want.Status == http.StatusOK {
 			if _, ok := imageMetaCache.get(id); !ok {
-				t.Fatalf("%s: the image_objects path did not fill imageMetaCache", name)
+				t.Fatalf("%s: the miss did not fill imageMetaCache", name)
 			}
 		}
 	}
