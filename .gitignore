@@ -18,9 +18,3 @@ node_modules/
 # ISUReal: ビルド成果物、macOS の AppleDouble
 ._*
 /webapp/go/isureal
-/webapp/rust/target/
-/webapp/perl/local/
-/webapp/php/vendor/
-/webapp/python/.venv/
-/webapp/ruby/vendor/
-/webapp/ruby/.bundle/
