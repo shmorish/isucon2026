@@ -50,7 +50,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			Visible       bool      `db:"visible"`
 		}
 		if createdAt, ok := imageCreatedAtCache.get(input.ImageID); ok {
-			err = h.DB.GetContext(ctx, &meta, imageMetaQuery+` AND i.created_at = $2`, input.ImageID, createdAt)
+			err = h.DB.GetContext(ctx, &meta, imageMetaByCreatedAtQuery, input.ImageID, createdAt)
 		} else {
 			err = h.DB.GetContext(ctx, &meta, imageMetaQuery, input.ImageID)
 		}
@@ -92,9 +92,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-// image_objects は created_at で分割されていて id だけだと全パーティションの主キーを引くので、
-// 一度 DB から読んだ created_at を覚えておいて次からは1パーティションに絞る
-const imageMetaQuery = `
+const imageMetaSelect = `
    SELECT u.secret_key_hash, i.media_type, i.created_at, (
      u.profile_image_id = i.id
      OR EXISTS (
@@ -107,9 +105,27 @@ const imageMetaQuery = `
        JOIN users author ON author.id = p.author_id AND author.status = 'active'
        WHERE r.image_id = i.id AND r.reactor_id = u.id AND r.replaced_at IS NULL AND r.deleted_at IS NULL
      )
-   ) IS TRUE AS visible
+   ) IS TRUE AS visible`
+
+// image_objects は created_at で分割されていて id だけだと全パーティションの主キーを引く。
+// 投稿の画像は created_at = posts.posted_at なので先にそれで1パーティションだけ引き、
+// 見つからないとき（RealMoji・プロフィール画像）だけ全パーティションを引く
+const imageMetaQuery = `
+   WITH by_post AS (
+     SELECT i.id, i.owner_user_id, i.media_type, i.created_at FROM image_objects i
+     WHERE i.id = $1 AND i.created_at = (SELECT p.posted_at FROM posts p WHERE p.image_id = $1 LIMIT 1)
+   ), img AS (
+     SELECT * FROM by_post
+     UNION ALL
+     SELECT i.id, i.owner_user_id, i.media_type, i.created_at FROM image_objects i
+     WHERE i.id = $1 AND NOT EXISTS (SELECT 1 FROM by_post)
+   )` + imageMetaSelect + `
+   FROM img i JOIN users u ON u.id = i.owner_user_id
+   WHERE u.status = 'active'`
+
+const imageMetaByCreatedAtQuery = imageMetaSelect + `
    FROM image_objects i JOIN users u ON u.id = i.owner_user_id
-   WHERE i.id = $1 AND u.status = 'active'`
+   WHERE i.id = $1 AND i.created_at = $2 AND u.status = 'active'`
 
 // INSERT 時の値は入れない。DB 側でマイクロ秒に丸められて一致しなくなるため、DB から読んだ値だけを覚える。
 // id は UUID で再利用されず created_at も変わらないので、初期化で消えた画像の値が残っても該当行なしになるだけ。
