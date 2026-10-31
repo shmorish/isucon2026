@@ -15,6 +15,10 @@ CREATE INDEX IF NOT EXISTS notifications_created_at_brin ON notifications USING 
 CREATE INDEX IF NOT EXISTS comments_created_at_brin ON comments USING brin(created_at);
 CREATE INDEX IF NOT EXISTS realmojis_created_at_brin ON realmojis USING brin(created_at);
 CREATE INDEX IF NOT EXISTS posts_created_at_brin ON posts USING brin(created_at);
+-- Opening a window inserts one notification per region user; the random-uuid PK and (user_id, posting_window_id) put each row on a cold leaf page.
+-- (user_id, created_at) appends at the end of each user's range, which is also what the notification poll reads. Neither constraint can be violated by the one INSERT (new window id, gen_random_uuid id).
+CREATE INDEX IF NOT EXISTS notifications_user_id_created_at ON notifications(user_id, created_at);
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_pkey, DROP CONSTRAINT IF EXISTS notifications_user_id_posting_window_id_key;
 
 SET session_replication_role = replica;
 
