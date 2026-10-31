@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,95 +47,115 @@ type createPostResponse struct {
 	LateSeconds     int64              `json:"lateSeconds"`
 }
 
+// readCreatePostInput returns the 400s (and image read errors) that come before any DB access.
+func readCreatePostInput(c *echo.Context) (createPostRequest, PostLocation, []byte, error) {
+	var input createPostRequest
+	if err := c.Bind(&input); err != nil {
+		return input, PostLocation{}, nil, err
+	}
+	if input.Image == nil || !validUserText(input.Caption, 0, 1000) {
+		return input, PostLocation{}, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	switch input.Visibility {
+	case "friends", "friends_of_friends", "public":
+	default:
+		return input, PostLocation{}, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	location := PostLocation{
+		Kind: input.LocationKind, Latitude: input.Latitude,
+		Longitude: input.Longitude, Locality: input.Locality,
+	}
+	if !location.valid() {
+		return input, location, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	imageFile, err := input.Image.Open()
+	if err != nil {
+		return input, location, nil, err
+	}
+	defer imageFile.Close()
+	imageData, err := io.ReadAll(imageFile)
+	if err != nil {
+		return input, location, nil, err
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(imageData))
+	if err != nil {
+		return input, location, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	if cfg.Width > 4096 || cfg.Height > 4096 {
+		return input, location, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	return input, location, imageData, nil
+}
+
+// createPostQuery inserts the image and the post only when the user's active window has a free slot (the checks of
+// activeWindowWithPostCountsQuery, whose $1/$2 are the user id and region). It runs after the user row is locked, so it
+// sees posts committed while waiting for the lock. No row back means no free slot.
+const createPostQuery = `
+  WITH win AS (` + activeWindowWithPostCountsQuery + `),
+  ok AS (SELECT id FROM win WHERE active = 0 AND deleted < 2 AND starts_at <= $5::timestamptz),
+  image AS (
+    INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at)
+    SELECT $3::varchar, $1::varchar, $4::bytea, 'image/jpeg', $5::timestamptz FROM ok
+  ), p AS (
+    INSERT INTO posts (id, author_id, posting_window_id, image_id, caption, visibility,
+                       location_kind, latitude, longitude, locality, posted_at)
+    SELECT $6::varchar, $1::varchar, ok.id, $3::varchar, $7::text, $8::text,
+           $9::text, $10::numeric, $11::numeric, $12::text, $5::timestamptz FROM ok
+    RETURNING *
+  )
+  SELECT ` + postColumns + ` FROM p JOIN posting_windows w ON w.id = p.posting_window_id
+`
+
+// createPostLockSQL looks the session up and locks the user's row (FOR NO KEY UPDATE, like lockUser) in one statement.
+var createPostLockSQL = `
+  WITH ` + sessionCTE + `
+  SELECT ` + sessionSelect + `, u.* FROM sess CROSS JOIN LATERAL (
+    SELECT ` + strings.Join(userColumns, ", ") + ` FROM users WHERE id = sess.user_id FOR NO KEY UPDATE
+  ) u
+`
+
+// createPostHandler sends BEGIN, the session lookup with the user lock, the guarded INSERT and COMMIT: 4 round trips
+// (was 6 with the separate session lookup and window query; ~100ms each on s2/s3).
 func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
-		var input createPostRequest
-		if err := c.Bind(&input); err != nil {
+		input, location, imageData, err := readCreatePostInput(c)
+		if err := foldedSessionBefore(c, h, err); err != nil {
 			return err
-		}
-		if input.Image == nil || !validUserText(input.Caption, 0, 1000) {
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
-		}
-		switch input.Visibility {
-		case "friends", "friends_of_friends", "public":
-		default:
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
-		}
-		location := PostLocation{
-			Kind: input.LocationKind, Latitude: input.Latitude,
-			Longitude: input.Longitude, Locality: input.Locality,
-		}
-		if !location.valid() {
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
-		}
-		imageFile, err := input.Image.Open()
-		if err != nil {
-			return err
-		}
-		defer imageFile.Close()
-		imageData, err := io.ReadAll(imageFile)
-		if err != nil {
-			return err
-		}
-		cfg, err := jpeg.DecodeConfig(bytes.NewReader(imageData))
-		if err != nil {
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
-		}
-		if cfg.Width > 4096 || cfg.Height > 4096 {
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
 		}
 
 		ctx := c.Request().Context()
-		userID := GetSession(c).UserID
 		tx, err := h.DB.BeginTxx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback()
-		user, err := lockUser(ctx, tx, userID)
-		if err != nil {
+		var locked struct {
+			sessionColumns
+			User
+		}
+		err = tx.GetContext(ctx, &locked, createPostLockSQL, foldedSessionTokenHash(c))
+		if err := foldedSessionResult(c, h, err, locked.sessionColumns); err != nil {
 			return err
 		}
+		user := locked.User
 		if err := user.requireActive(); err != nil {
 			return err
 		}
-		var window struct {
-			ID        string    `db:"id"`
-			LocalDate time.Time `db:"local_date"`
-			StartsAt  time.Time `db:"starts_at"`
-			Active    int       `db:"active"`
-			Deleted   int       `db:"deleted"`
-		}
-		err = tx.GetContext(ctx, &window, activeWindowWithPostCountsQuery, userID, user.Region)
+		postedAt := time.Now().UTC()
+		imageID := uuid.NewString()
+		args := []any{user.ID, user.Region, imageID, imageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
+			location.Kind, location.Latitude, location.Longitude, location.Locality}
+		var post Post
+		err = tx.GetContext(ctx, &post, createPostQuery, args...)
 		// 重複に見えるが消さない。FOR SHARE で待つ間に投稿期間が終わると、READ COMMITTED の再確認で
 		// 行が外れて0行になる。次の文は新しいスナップショットで始まり、新しく開いた期間を見る。
 		if errors.Is(err, sql.ErrNoRows) {
-			err = tx.GetContext(ctx, &window, activeWindowWithPostCountsQuery, userID, user.Region)
+			err = tx.GetContext(ctx, &post, createPostQuery, args...)
 		}
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return NewAPIError(http.StatusConflict, "post_slot_unavailable")
-			}
-			return err
-		}
-		postedAt := time.Now().UTC()
-		if window.Active != 0 || window.Deleted >= 2 || postedAt.Before(window.StartsAt) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
 		}
-		imageID := uuid.NewString()
-		var post Post
-		if err := tx.GetContext(ctx, &post, `
-   WITH image AS (
-     INSERT INTO image_objects (id, owner_user_id, data, media_type, created_at) VALUES ($1, $2, $3, 'image/jpeg', $4)
-   ), p AS (
-     INSERT INTO posts (id, author_id, posting_window_id, image_id, caption, visibility,
-                        location_kind, latitude, longitude, locality, posted_at)
-     VALUES ($5, $2, $6, $1, $7, $8, $9, $10, $11, $12, $4)
-     RETURNING *
-   )
-   SELECT `+postColumns+` FROM p JOIN posting_windows w ON w.id = p.posting_window_id
-  `, imageID, userID, imageData, postedAt, uuid.NewString(), window.ID, input.Caption, input.Visibility,
-			location.Kind, location.Latitude, location.Longitude, location.Locality); err != nil {
+		if err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
@@ -146,7 +167,6 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-// 署名する画像を変えたら appendImagesToSign の呼び出し側も揃える
 func newPostResponse(post Post, user User) createPostResponse {
 	response := createPostResponse{
 		ID: post.ID,

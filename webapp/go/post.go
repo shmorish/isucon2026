@@ -301,6 +301,7 @@ func getFriendIDs(ctx context.Context, db sqlx.QueryerContext, userID string) ([
 // Every place that row-locks users. Changing a mode or the order here changes
 // what these exclude each other from; check all of them together.
 //   - lockUser, lockUserRow: own row, FOR NO KEY UPDATE
+//   - post create (createPostLockSQL in post_api.go): own row, FOR NO KEY UPDATE, joined to the session lookup
 //   - account deletion (account_deletion_api.go): own row, FOR NO KEY UPDATE, status='active'
 //   - profile image set/delete (profile_image_api.go): own row, FOR NO KEY UPDATE, reads profile_image_id
 //   - login (user_api.go): row by username, FOR NO KEY UPDATE
