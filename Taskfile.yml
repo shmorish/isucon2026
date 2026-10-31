@@ -64,6 +64,13 @@ tasks:
     cmds:
       - |
         set -e
+        # PostgreSQL の設定が変わったときだけ restart で再起動する
+        rm -f /tmp/pg-conf-changed
+        if [ -d {{.SERVER_ID}}/etc/postgresql ]; then
+          (cd {{.SERVER_ID}}/etc && find postgresql -type f) | while read -r f; do
+            sudo cmp -s "{{.SERVER_ID}}/etc/$f" "/etc/$f" || touch /tmp/pg-conf-changed
+          done
+        fi
         for d in nginx mysql postgresql sysctl.d systemd; do
           if [ -d {{.SERVER_ID}}/etc/$d ]; then sudo cp -r {{.SERVER_ID}}/etc/$d/. /etc/$d/; fi
         done
@@ -82,8 +89,11 @@ tasks:
         set -e
         if systemctl is-enabled nginx >/dev/null 2>&1; then sudo nginx -t; fi
         for s in nginx mysql postgresql {{.APP_SERVICE}}; do
-          if systemctl is-enabled $s >/dev/null 2>&1; then sudo systemctl restart $s; fi
+          systemctl is-enabled $s >/dev/null 2>&1 || continue
+          if [ $s = postgresql ] && [ ! -e /tmp/pg-conf-changed ] && systemctl is-active -q $s; then continue; fi
+          sudo systemctl restart $s
         done
+        rm -f /tmp/pg-conf-changed
 
   bench-prep:
     desc: ベンチ前にログと pg_stat_statements を空にする
