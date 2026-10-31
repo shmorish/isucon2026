@@ -2,6 +2,8 @@ package isureal
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,4 +91,59 @@ func TestImageDiskCacheRoundTripAndRejectsNonUUID(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("putImageData did not write the file")
+}
+
+func TestImageAccelPathOnlyForCompleteReadableFiles(t *testing.T) {
+	imageDiskCacheDir = t.TempDir()
+	dir := filepath.Join(imageDiskCacheDir, "ab")
+	os.MkdirAll(dir, 0o755)
+	png := append(append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte("p"), 100)...), "IEND\xaeB`\x82"...)
+	cases := map[string]struct {
+		data []byte
+		perm os.FileMode
+		want bool
+	}{
+		"abcd0000-0000-4000-8000-000000000001": {[]byte("\xff\xd8jpeg\xff\xd9"), 0o644, true}, // shorter than 16 bytes
+		"abcd0000-0000-4000-8000-000000000002": {png, 0o644, true},
+		"abcd0000-0000-4000-8000-000000000003": {png[:len(png)-1], 0o644, false}, // truncated
+		"abcd0000-0000-4000-8000-000000000004": {nil, 0o644, false},
+		"abcd0000-0000-4000-8000-000000000005": {png, 0o600, false}, // nginx (www-data) cannot read it
+	}
+	for id, tc := range cases {
+		os.WriteFile(filepath.Join(dir, id), tc.data, tc.perm)
+		os.Chmod(filepath.Join(dir, id), tc.perm)
+		path, ok := imageAccelPath(id)
+		if ok != tc.want || (ok && path != "/_image_cache/ab/"+id) {
+			t.Errorf("%s: got %q, %v", id, path, ok)
+		}
+	}
+	if _, ok := imageAccelPath("abcd0000-0000-4000-8000-000000000009"); ok {
+		t.Error("missing file was accepted")
+	}
+	// files written by writeImageFile are readable by nginx
+	id := "abcd0000-0000-4000-8000-000000000006"
+	writeImageFile(id, png)
+	if _, ok := imageAccelPath(id); !ok {
+		t.Error("file written by writeImageFile cannot be handed to nginx")
+	}
+}
+
+func TestFromLocalNginx(t *testing.T) {
+	for _, tc := range []struct {
+		remote, marker string
+		want           bool
+	}{
+		{"127.0.0.1:51234", "1", true},
+		{"127.0.0.1:51234", "", false},
+		{"192.168.2.10:51234", "1", false}, // s2/s3 nginx pass the client's headers through to s1:8080
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/api/images/x", nil)
+		r.RemoteAddr = tc.remote
+		if tc.marker != "" {
+			r.Header.Set("X-Isureal-Image-Accel", tc.marker)
+		}
+		if got := fromLocalNginx(r); got != tc.want {
+			t.Errorf("%+v: got %v", tc, got)
+		}
+	}
 }
