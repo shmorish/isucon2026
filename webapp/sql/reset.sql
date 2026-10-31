@@ -10,6 +10,8 @@ CREATE INDEX IF NOT EXISTS posts_image_id ON posts(image_id);
 CREATE INDEX IF NOT EXISTS login_sessions_token_hash ON login_sessions(token_hash);
 CREATE INDEX IF NOT EXISTS login_sessions_user_id_active ON login_sessions(user_id) WHERE active;
 CREATE INDEX IF NOT EXISTS users_username ON users(username);
+-- 画像の created_at をプロフィール画像から逆引きする（imageCreatedAtLookupQuery）
+CREATE INDEX IF NOT EXISTS users_profile_image_id ON users(profile_image_id);
 -- User search matches substrings anywhere; without these it walks every user in username order (~4900 buffer hits per query)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE INDEX IF NOT EXISTS users_username_trgm ON users USING gin (username gin_trgm_ops);

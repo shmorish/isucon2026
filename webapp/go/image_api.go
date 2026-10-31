@@ -63,10 +63,19 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			q = imageMetaQueryMetaOnly
 		}
 		createdAt, ok := imageCreatedAtCache.get(input.ImageID)
+		if !ok {
+			// 覚えていなければ、画像を参照している行から created_at を引いてくる。id だけの検索は全パーティションを
+			// ロックする（1回あたり relation ロック 94 個、fast-path に収まるのは 16 個）ので、最後の手段にする
+			var referenced sql.NullTime
+			if err := h.DB.GetContext(ctx, &referenced, imageCreatedAtLookupQuery, input.ImageID); err != nil {
+				return err
+			}
+			createdAt, ok = referenced.Time, referenced.Valid
+		}
 		if ok {
 			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, binaryImage, input.ImageID, createdAt)
 		}
-		// 覚えた created_at で見つからないとき（画像の created_at が投稿の posted_at と違うなど）は id だけで引き直す
+		// 引いた created_at で見つからないとき（画像の created_at が参照元の時刻と違うなど）は id だけで引き直す
 		if !ok || errors.Is(err, sql.ErrNoRows) {
 			err = h.DB.GetContext(ctx, &meta, q.byID, binaryImage, input.ImageID)
 		}
@@ -119,28 +128,28 @@ func imageMetaSelect(cols string) string {
 type imageMetaQuery struct{ byID, byCreatedAt string }
 
 // image_objects は created_at で分割されていて id だけだと全パーティションの主キーを引く。
-// 投稿の画像は created_at = posts.posted_at なので先にそれで1パーティションだけ引き、
-// 見つからないとき（RealMoji・プロフィール画像）だけ全パーティションを引く。
+// created_at を引数で渡したときだけプランナが1パーティションに絞る（サブクエリで求めた値では、実行時に
+// 枝は刈られてもプランに残った全パーティションをロックする）ので、先に参照元の行から created_at を取ってから引く。
 var (
 	imageMetaQueryMetaOnly = newImageMetaQuery("")
 	imageMetaQueryWithData = newImageMetaQuery("i.data, ")
 )
 
+// imageCreatedAtLookupQuery は画像を参照している行の時刻を返す。投稿の画像は createPostQuery が posted_at で
+// INSERT する。初期データでは RealMoji の画像は realmojis.created_at、プロフィール画像は users.updated_at と
+// 一致する（s4 で確認。ベンチ中に作られる RealMoji・プロフィール画像は数 ms ずれるので byID に落ちる）。
+// 違っていても byCreatedAt が空になって byID で引き直すだけなので、結果は変わらない
+const imageCreatedAtLookupQuery = `
+   SELECT COALESCE(
+     (SELECT p.posted_at FROM posts p WHERE p.image_id = $1 LIMIT 1),
+     (SELECT r.created_at FROM realmojis r WHERE r.image_id = $1 LIMIT 1),
+     (SELECT u.updated_at FROM users u WHERE u.profile_image_id = $1 LIMIT 1))`
+
 func newImageMetaQuery(cols string) imageMetaQuery {
-	imgCols := cols + "i.id, i.owner_user_id, i.media_type, i.created_at"
 	return imageMetaQuery{
-		byID: `
-   WITH by_post AS (
-     SELECT ` + imgCols + ` FROM image_objects i
-     WHERE i.id = $1 AND i.created_at = (SELECT p.posted_at FROM posts p WHERE p.image_id = $1 LIMIT 1)
-   ), img AS (
-     SELECT * FROM by_post
-     UNION ALL
-     SELECT ` + imgCols + ` FROM image_objects i
-     WHERE i.id = $1 AND NOT EXISTS (SELECT 1 FROM by_post)
-   )` + imageMetaSelect(cols) + `
-   FROM img i JOIN users u ON u.id = i.owner_user_id
-   WHERE u.status = 'active'`,
+		byID: imageMetaSelect(cols) + `
+   FROM image_objects i JOIN users u ON u.id = i.owner_user_id
+   WHERE i.id = $1 AND u.status = 'active'`,
 		byCreatedAt: imageMetaSelect(cols) + `
    FROM image_objects i JOIN users u ON u.id = i.owner_user_id
    WHERE i.id = $1 AND i.created_at = $2 AND u.status = 'active'`,
