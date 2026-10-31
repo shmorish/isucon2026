@@ -75,12 +75,6 @@ tasks:
           if [ -d {{.SERVER_ID}}/etc/$d ]; then sudo cp -r {{.SERVER_ID}}/etc/$d/. /etc/$d/; fi
         done
         if [ -d {{.SERVER_ID}}/etc/sysctl.d ]; then sudo sysctl --system >/dev/null; fi
-        # s2・s3 の nginx (www-data) が s1 から取り直した画像を image-cache に保存できるようにする (@s1image の proxy_store)
-        if grep -qs proxy_store {{.SERVER_ID}}/etc/nginx/sites-available/isureal.conf; then
-          mkdir -p "$HOME/image-cache/.nginx-tmp"
-          # .nginx-tmp は nginx が先に www-data:root 0700 で作ることがあるので、持ち主ごと揃える
-          find "$HOME/image-cache" -maxdepth 1 -type d -exec sudo chown isucon:www-data {} + -exec sudo chmod 2775 {} +
-        fi
         if [ -d {{.SERVER_ID}}/home ]; then cp -r {{.SERVER_ID}}/home/. "$HOME"/; fi
         sudo systemctl daemon-reload
 
@@ -134,7 +128,7 @@ tasks:
         {{.PSQL}} -At -c "SELECT 'pending_restart (反映には再起動が必要): ' || name FROM pg_settings WHERE pending_restart"
 
   clean-uploads:
-    desc: 's1・s2・s3 で /api/initialize の前に実行。前回のベンチでアップロードされた画像（初期データより後に作られた image_objects の行）のファイルを image-cache から消す。初期データの画像は残る'
+    desc: 's1 で /api/initialize の前に実行。前回のベンチでアップロードされた画像（初期データより後に作られた image_objects の行）のファイルを image-cache から消す。初期データの画像は残る'
     cmds:
       - |
         set -e

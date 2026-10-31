@@ -86,7 +86,6 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		h.Notifications.pollSoon()
 		return c.JSON(http.StatusCreated, openPostingWindowResponse{
 			ID: window.ID, Region: window.Region, LocalDate: window.LocalDate.Format(time.DateOnly),
 			StartsAt: window.StartsAt, OnTimeDeadline: window.OnTimeDeadline,

@@ -24,9 +24,6 @@ type notificationHub struct {
 	logger      *slog.Logger
 	mu          sync.Mutex
 	subscribers map[*notificationSubscriber]struct{}
-	// kick asks run to poll now instead of waiting for the next tick (window open). Buffered 1: kicks during a poll
-	// collapse into one more poll right after it
-	kick chan struct{}
 }
 
 type notificationPollRow struct {
@@ -58,7 +55,7 @@ WHERE u.id IS NULL OR x.id IS NOT NULL
 `
 
 func newNotificationHub(db *sqlx.DB, logger *slog.Logger) *notificationHub {
-	return &notificationHub{db: db, logger: logger, subscribers: map[*notificationSubscriber]struct{}{}, kick: make(chan struct{}, 1)}
+	return &notificationHub{db: db, logger: logger, subscribers: map[*notificationSubscriber]struct{}{}}
 }
 
 func (hub *notificationHub) subscribe(userID, region string, connectedAt time.Time) *notificationSubscriber {
@@ -91,23 +88,10 @@ func (hub *notificationHub) snapshot() []*notificationSubscriber {
 func (hub *notificationHub) run() {
 	ticker := time.NewTicker(notificationPollInterval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-		case <-hub.kick:
-		}
+	for range ticker.C {
 		if err := hub.poll(); err != nil {
 			hub.logger.Error("failed to poll notifications", "error", err)
 		}
-	}
-}
-
-// pollSoon makes run poll right away. The poll is the same query as on a tick, only earlier, so what is delivered
-// does not change: a just-committed window reaches its subscribers without waiting up to notificationPollInterval
-func (hub *notificationHub) pollSoon() {
-	select {
-	case hub.kick <- struct{}{}:
-	default:
 	}
 }
 

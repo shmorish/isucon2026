@@ -53,13 +53,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
 		// 持っていなければ同じ問い合わせで data も読む。s1 の nginx 経由でディスクに完全なファイルがあれば、
 		// 確認だけしてファイルの送信は nginx に任せる（#76）
-		accelPath, accel := "", false
-		switch {
-		case fromLocalNginx(c.Request()):
+		accelPath, accel := "", fromLocalNginx(c.Request())
+		if accel {
 			accelPath, accel = imageAccelPath(input.ImageID)
-		case fromRegionNginx(c.Request()):
-			// s2・s3 の nginx が自分のディスクのファイルを返す。無ければ s1 に本体を取りに来る（s2 の isureal.conf の @s1image）
-			accelPath, accel = imageAccelURI(input.ImageID)
 		}
 		var data []byte
 		cached := accel
@@ -375,37 +371,6 @@ func fromLocalNginx(r *http.Request) bool {
 	return err == nil && addr.Addr().IsLoopback()
 }
 
-// regionNginxAddrs は s2・s3 のアドレス。署名先（ISUREAL_IMAGE_SIGNERS）と同じサーバーなのでそこから取る
-var regionNginxAddrs = func() map[netip.Addr]bool {
-	addrs := map[netip.Addr]bool{}
-	for _, signer := range imageSigners {
-		if u, err := url.Parse(signer); err == nil {
-			if addr, err := netip.ParseAddr(u.Hostname()); err == nil {
-				addrs[addr] = true
-			}
-		}
-	}
-	return addrs
-}()
-
-// fromRegionNginx は s2・s3 の nginx から来た画像のリクエスト。印は s2・s3 の nginx がクライアントの値を上書きして付ける。
-// ファイルが s2・s3 に無いときの取り直し（@s1image）は印を消して来るので、s1 が本体を返す
-func fromRegionNginx(r *http.Request) bool {
-	if r.Header.Get("X-Isureal-Image-Accel") != "1" {
-		return false
-	}
-	addr, err := netip.ParseAddrPort(r.RemoteAddr)
-	return err == nil && regionNginxAddrs[addr.Addr().Unmap()]
-}
-
-// imageAccelURI はファイルの有無を見ずに内部 URI を返す（s2・s3 のファイルは s1 から見えない）
-func imageAccelURI(id string) (string, bool) {
-	if !imageIDPattern.MatchString(id) {
-		return "", false
-	}
-	return "/_image_cache/" + id[:2] + "/" + id, true
-}
-
 // imageAccelPath は nginx に渡してよい画像ファイルの内部 URI を返す（s1 の isureal.conf の /_image_cache/）。
 // 本体を読まずに、先頭と末尾の 8 バイトだけで completeImage と同じ判定をする。
 // nginx (www-data) が読めない 0600 のファイル（#76 より前に書いたもの）はアプリが今までどおり返す
@@ -433,7 +398,7 @@ func imageAccelPath(id string) (string, bool) {
 	if err != nil || !completeImage(b) {
 		return "", false
 	}
-	return imageAccelURI(id)
+	return "/_image_cache/" + id[:2] + "/" + id, true
 }
 
 var (
