@@ -1,3 +1,7 @@
+-- 追加インデックス（init.sh は reset.sql しか流さないのでここに書く）
+CREATE INDEX IF NOT EXISTS realmojis_image_id ON realmojis(image_id);
+CREATE INDEX IF NOT EXISTS posts_image_id ON posts(image_id);
+
 SET session_replication_role = replica;
 
 BEGIN;
