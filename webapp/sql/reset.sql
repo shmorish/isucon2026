@@ -57,31 +57,33 @@ BEGIN
   END LOOP;
 END $$;
 -- ベンチで書く画像の TOAST は1つなので、投稿の INSERT が TOAST の拡張ロック (Lock:extend) を取り合う (#50)。
--- 上で空にした範囲パーティションのうち、ベンチと追試で書く月 (境界の日〜翌月) だけを id のハッシュで 8 つに分けて作り直す
--- (TOAST と拡張ロックも 8 つになる)。それより後の月は分けない。分けると子テーブルが増え、created_at で絞れないクエリが
--- 全部の子をロックして fast-path (16個) を溢れ、LWLock:LockManager を取り合う (#61)。分けた月が分かれていない、
--- または分けない月が分かれているときだけ作り直すので、次の initialize からは何もしない。初期データのパーティションには触れない。
+-- 上で空にした範囲パーティションのうち、ベンチと追試で書く月 (境界の日〜翌月) だけを id のハッシュで 16 に分けて作り直す
+-- (TOAST と拡張ロックも 16 になる)。8 では、全リージョンの投稿を s1 の 60 接続から入れるようになって、1つの TOAST に
+-- 10 前後の INSERT が並ぶ瞬間が出た (#50)。それより後の月 (202612〜202706) は空のまま使わないので消し、default に任せる。
+-- 子テーブルが増えると、created_at でも id でも絞れないクエリ (エクスポートの unnest JOIN など) が全部の子をロックして
+-- fast-path (16個) を溢れ、LWLock:LockManager を取り合う (#61)。id で引くクエリ (RealMoji・プロフィール画像) はハッシュの子を
+-- 1つに絞れるので 16 にしても増えず、消す7つの分だけ減る。子テーブルは 50 → 59。
+-- 分けた月の子の数が 16 でないとき、または後の月が残っているときだけ作り直す・消すので、次の initialize からは何もしない。
+-- 初期データのパーティションと default には触れない。
 DO $$
-DECLARE part record; k int;
+DECLARE part record; k int; modulus constant int := 16;
 BEGIN
   FOR part IN
-    SELECT c.relname, c.relkind = 'p' AS is_hash, pg_get_expr(c.relpartbound, c.oid) AS bound,
+    SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bound,
+      (SELECT count(*) FROM pg_inherits h WHERE h.inhparent = c.oid) AS children,
       c.relname <= 'image_objects_' || to_char((SELECT created_at FROM initial_data_boundary) AT TIME ZONE 'UTC' + interval '1 month', 'YYYYMM') AS want_hash
     FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
     WHERE i.inhparent = 'image_objects'::regclass AND c.relname <> 'image_objects_default'
       AND c.relname > 'image_objects_' || to_char((SELECT created_at FROM initial_data_boundary) AT TIME ZONE 'UTC', 'YYYYMM')
   LOOP
-    CONTINUE WHEN part.is_hash = part.want_hash;
+    CONTINUE WHEN part.want_hash AND part.children = modulus;
     EXECUTE format('ALTER TABLE image_objects DETACH PARTITION %I', part.relname);
     EXECUTE format('DROP TABLE %I', part.relname);
-    IF part.want_hash THEN
-      EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s PARTITION BY HASH (id)', part.relname, part.bound);
-      FOR k IN 0..7 LOOP
-        EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS 8, REMAINDER %s)', part.relname || '_h' || k, part.relname, k);
-      END LOOP;
-    ELSE
-      EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s', part.relname, part.bound);
-    END IF;
+    CONTINUE WHEN NOT part.want_hash;
+    EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s PARTITION BY HASH (id)', part.relname, part.bound);
+    FOR k IN 0..modulus - 1 LOOP
+      EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS %s, REMAINDER %s)', part.relname || '_h' || k, part.relname, modulus, k);
+    END LOOP;
     EXECUTE format('ALTER TABLE %I ALTER COLUMN data SET STORAGE EXTERNAL', part.relname);
   END LOOP;
 END $$;
