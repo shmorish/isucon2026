@@ -1,19 +1,14 @@
 package isureal
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/url"
-	"os"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -39,17 +34,6 @@ var (
 	imageSignatureMu       sync.Mutex
 	imageSignatureCache    = map[string][]byte{}
 	imageSignatureCacheOld = map[string][]byte{}
-)
-
-// s1 では HMAC を計算せず、メモにない署名は s2・s3 にその場で頼む（ISUREAL_IMAGE_SIGN_REMOTE_ONLY=1）。
-// 全署名先に断られたときだけ手元で計算する。ISUREAL_IMAGE_SIGN_LOCAL_FALLBACK=0 ならそれもせず 500 にする
-var (
-	imageSignRemoteOnly    = os.Getenv("ISUREAL_IMAGE_SIGN_REMOTE_ONLY") == "1"
-	imageSignLocalFallback = os.Getenv("ISUREAL_IMAGE_SIGN_LOCAL_FALLBACK") != "0"
-	// imageSignLocalFallbacks は remote-only なのに手元で計算した回数、imageSignLocalComputes は imageSignature が手元で計算した回数
-	imageSignLocalFallbacks    atomic.Int64
-	imageSignLocalComputes     atomic.Int64
-	errImageSigningUnavailable = errors.New("image signing unavailable: all signers failed")
 )
 
 func imageSignatureCacheKey(key []byte, imageID string, exp int64) string {
@@ -81,19 +65,6 @@ func imageSignature(key []byte, imageID string, exp int64) []byte {
 	if sig, ok := cachedImageSignature(cacheKey); ok {
 		return sig
 	}
-	if imageSignRemoteOnly && len(imageSigners) > 0 {
-		sigs := signImagesRemotely(context.Background(), []imageSignatureRequest{{key, imageID, exp}})
-		if sigs[0] != nil {
-			storeImageSignature(cacheKey, sigs[0])
-			return sigs[0]
-		}
-		if !imageSignLocalFallback {
-			// Recover ミドルウェアが拾って、ほかの内部エラーと同じ 500 になる
-			panic(errImageSigningUnavailable)
-		}
-		slog.Warn("image signing fell back to local", "count", imageSignLocalFallbacks.Add(1))
-	}
-	imageSignLocalComputes.Add(1)
 	sig := computeImageSignature(key, imageID, exp)
 	storeImageSignature(cacheKey, sig)
 	return sig
