@@ -390,18 +390,31 @@ func fromLocalNginx(r *http.Request) bool {
 // 本体を読まずに、先頭と末尾の 8 バイトだけで completeImage と同じ判定をする。
 // nginx (www-data) が読めない 0600 のファイル（#76 より前に書いたもの）はアプリが今までどおり返す
 func imageAccelPath(id string) (string, bool) {
-	path, ok := imageDiskPath(id)
+	f, st, ok := openCompleteImageFile(id)
 	if !ok {
 		return "", false
 	}
-	f, err := os.Open(path)
-	if err != nil {
+	f.Close()
+	if st.Mode().Perm()&0o004 == 0 {
 		return "", false
 	}
-	defer f.Close()
+	return "/_image_cache/" + id[:2] + "/" + id, true
+}
+
+// openCompleteImageFile は画像ファイルを開き、本体を読まずに先頭と末尾の 8 バイトだけで completeImage と同じ判定をする
+func openCompleteImageFile(id string) (*os.File, os.FileInfo, bool) {
+	path, ok := imageDiskPath(id)
+	if !ok {
+		return nil, nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, false
+	}
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 {
-		return "", false
+	if err != nil || !st.Mode().IsRegular() {
+		f.Close()
+		return nil, nil, false
 	}
 	// PNG の先頭・末尾の印がどちらも 8 バイトなので、16 バイトあれば足りる
 	b := make([]byte, min(st.Size(), 16))
@@ -411,9 +424,10 @@ func imageAccelPath(id string) (string, bool) {
 		_, err = f.ReadAt(b[8:], st.Size()-8)
 	}
 	if err != nil || !completeImage(b) {
-		return "", false
+		f.Close()
+		return nil, nil, false
 	}
-	return "/_image_cache/" + id[:2] + "/" + id, true
+	return f, st, true
 }
 
 var (
