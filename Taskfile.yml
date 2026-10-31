@@ -93,12 +93,13 @@ tasks:
   alp:
     desc: アクセスログをエンドポイントごとに合計時間順で一覧
     cmds:
-      - sudo alp json --file {{.NGINX_LOG}} --config scripts/alp.yml | tee /tmp/alp.txt
+      # alp 1.0.21 は --config を付けると結果が空になるので、設定は引数で渡す。パスのまとめ方は scripts/alp-groups.txt
+      - sudo alp json --file {{.NGINX_LOG}} --restime-key reqtime --sort sum -r -o count,2xx,4xx,5xx,method,uri,max,sum,avg,p99 -m "$(paste -sd, scripts/alp-groups.txt)" | tee /tmp/alp.txt
 
   slp:
-    desc: スロークエリを合計時間順に一覧 (rows examined が rows sent より極端に多いものはインデックス候補)
+    desc: s4 で実行。クエリ別の合計時間を一覧 (平均が大きいものはインデックスかロック待ちを疑う)
     cmds:
-      - sudo slp pg --config scripts/slp.yml --file {{.SLOW_LOG}} --nosave-pos | tee /tmp/slp.txt
+      - sudo python3 -I scripts/pgslow.py {{.SLOW_LOG}} | cut -c1-300 | tee /tmp/slp.txt
 
   monitor:
     desc: ベンチ開始直前に実行。CPU・メモリを1秒ごとに記録して /tmp/resource.txt に要約 (秒数は D=90 で変更)

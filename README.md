@@ -12,8 +12,8 @@ scripts/monitor.sh    ベンチ中の CPU・メモリ (全体とプロセス別)
 scripts/deploy-all.sh 手元の Mac で実行。全台に同時に task deploy (未 push の変更があれば止まる)
 scripts/reboot-all.sh 手元の Mac で実行。再起動試験 (全台を再起動してサービス状態と GET / を確認)
 scripts/ssh-hosts.sh  手元の Mac で実行。当日のIPを渡すと ~/.ssh/config に s1〜s3 を書く
-scripts/alp.yml       alp の設定。当日 matching_groups を書く
-scripts/slp.yml       slp の設定 (合計時間順・上位30件・rows examined 付き)
+scripts/alp-groups.txt  alp で ID を含む URL をまとめる正規表現 (1行1つ)
+scripts/pgslow.py       PostgreSQL のクエリログをクエリ別に集計する (task slp)
 s1/ s2/ s3/           サーバー別の /etc 設定 (etc/) と環境変数ファイル (home/)。task get-conf で取り込み、task deploy で書き戻す
 snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 ```
@@ -29,7 +29,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `./scripts/deploy-all.sh [s1 s2 s3]` | 変更を push した後、毎回（手元から全台に `task deploy`） |
 | `task deploy` | 1台だけサーバー上で反映するとき |
 | `./scripts/reboot-all.sh` | 大きな変更の後と終盤の再起動試験（手元から） |
-| `task analyze` | ベンチの後、毎回（alp / slp / pt-query-digest を集計） |
+| `task analyze` | ベンチの後、毎回 s1〜s3 で（alp を集計）。DB は s4 で `task slp` |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
 | `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。3台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
@@ -254,20 +254,19 @@ task analyze
 task score S=<点数> M="計測あり"
 ```
 
-`task analyze` は alp・slp・pt-query-digest の結果をターミナルに出し、`/tmp/alp.txt`・`/tmp/slp.txt`・`/tmp/slow.txt` にも保存する（Claude にはこのファイルを読ませる）。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
+`task analyze`（s1〜s3）は alp の結果をターミナルに出し、`/tmp/alp.txt` にも保存する。DB のクエリ別の集計は s4 で `task slp` を実行し、`/tmp/slp.txt` に保存される（Claude にはこのファイルを読ませる）。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
 
-ID を含む URL（`/api/user/123` など）が別々の行に分かれていたら、`scripts/alp.yml` の `matching_groups` に正規表現を書いて集計し直す。ログは次の `task deploy` まで残っているので、ベンチを回し直す必要はない。
+ID を含む URL（`/api/user/123` など）が別々の行に分かれていたら、`scripts/alp-groups.txt` に正規表現を1行足して集計し直す。ログは次の `task deploy` まで残っているので、ベンチを回し直す必要はない。
 
 ```
-vi scripts/alp.yml
+vi scripts/alp-groups.txt
 task alp
 ```
 
 **結果の読み方**
 
 - **alp**: `SUM`（合計時間）の大きい順。上から5つが改善の候補。`COUNT` が多いのに `AVG` が小さいものは、キャッシュや静的配信の候補
-- **slp**: クエリを合計時間の大きい順に1行ずつ並べた表。まずここで上位5つを見る。`AVG(ROWSEXAMINED)` が `AVG(ROWSSENT)` より桁違いに大きいクエリはインデックスが効いていない可能性が高い。`COUNT` が異常に多いものは N+1 の可能性が高い
-- **pt-query-digest**: slp で気になったクエリの詳細を見るときに使う。`Profile` 表の `Rank` から該当クエリを探すと、実際のクエリ例（そのまま `EXPLAIN` に使える）と対象テーブル名が載っている
+- **slp**（`scripts/pgslow.py`）: クエリを合計時間の大きい順に並べた表。まずここで上位5つを見る。平均が大きいものは `EXPLAIN` でインデックスを確かめ、`FOR UPDATE` や `LOCK` ならロック待ちを疑う。`count` が異常に多いものは N+1 の可能性が高い
 - **pprof**: `Top` 表示で、アプリの CPU を使っている関数を確認する。DB 待ちが長い場合は、ここではあまり目立たない
 - **CPU・メモリ（`task monitor`）**: サーバーごとに、全体の CPU 使用率・iowait・メモリと、プロセス別の CPU（100% = 1コア分）が出る
   - 全体の CPU が張り付いている（80% 以上）: いちばん使っているプロセスがボトルネック。mysqld ならクエリ・インデックスの改善か DB の別サーバー化、アプリなら pprof で重い関数を探すか台数を増やす、nginx なら静的配信・gzip・keepalive を見直す

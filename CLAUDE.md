@@ -24,8 +24,8 @@
 
 1. `git pull` してから作業する（サーバー側でも commit されることがある）
 2. 直前のベンチの計測結果を読む
-   - `ssh s1 cat /tmp/alp.txt`（エンドポイント別の合計時間）
-   - `ssh s1 cat /tmp/slp.txt`（クエリ別の合計時間、rows examined / rows sent）
+   - `ssh s1 cat /tmp/alp.txt`（エンドポイント別の合計時間。s2・s3 も同様）
+   - `ssh s4 cat /tmp/slp.txt`（クエリ別の合計時間。DB は s4）
    - `cat /tmp/resource-s*.txt`（サーバー別・プロセス別の CPU とメモリ。手元に保存されている）
    - `ssh s1 cat ~/scores.log`（スコアの推移とそのときのコミット）
 3. いちばん効果が大きそうな変更を**1つだけ**選び、理由を数字で説明する
@@ -50,7 +50,7 @@
 for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
 ```
 
-ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'` を実行して結果を読む。
+ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'`（s2・s3 も）と `ssh s4 'cd ~ && task slp'` を実行して結果を読む。
 
 ## DB の操作
 

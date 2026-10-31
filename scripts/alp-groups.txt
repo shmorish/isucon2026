@@ -1,0 +1,14 @@
+^/api/images/[^/]+$
+^/api/posts/[^/]+/comments$
+^/api/posts/[^/]+/realmojis$
+^/api/posts/me/current$
+^/api/posts/[^/]+$
+^/api/users/[^/]+$
+^/api/comments/[^/]+$
+^/api/realmojis/[^/]+$
+^/api/friend-requests/[^/]+/[^/]+$
+^/api/friendships/[^/]+$
+^/api/follows/[^/]+$
+^/api/blocks/[^/]+$
+^/api/memories/[^/]+$
+^/api/admin/users/[^/]+/certification$
