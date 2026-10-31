@@ -33,52 +33,37 @@ func createFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		blocked, err := isBlocked(ctx, tx, actor, input.RecipientID)
-		if err != nil {
+		// ブロック・友達・申請中の確認を1往復で行う
+		var state struct {
+			Blocked            bool    `db:"blocked"`
+			Friends            bool    `db:"friends"`
+			PendingID          *string `db:"pending_id"`
+			PendingRequesterID *string `db:"pending_requester_id"`
+		}
+		if err := tx.GetContext(ctx, &state, `
+   SELECT
+    EXISTS(SELECT 1 FROM block_relations WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1)) AS blocked,
+    EXISTS(SELECT 1 FROM friendships WHERE user_low_id=$3 AND user_high_id=$4) AS friends,
+    p.id AS pending_id, p.requester_id AS pending_requester_id
+   FROM (SELECT 1) one
+   LEFT JOIN LATERAL (
+    SELECT id, requester_id FROM friend_requests WHERE status='pending' AND
+     ((requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1))
+    LIMIT 1
+   ) p ON true
+  `, actor, input.RecipientID, min(actor, input.RecipientID), max(actor, input.RecipientID)); err != nil {
 			return err
 		}
-		if blocked {
+		if state.Blocked || state.Friends || (state.PendingID != nil && *state.PendingRequesterID == actor) {
 			return NewAPIError(http.StatusConflict, "relationship_conflict")
 		}
-		friends, err := getFriendIDs(ctx, tx, actor)
-		if err != nil {
-			return err
-		}
-		for _, id := range friends {
-			if id == input.RecipientID {
-				return NewAPIError(http.StatusConflict, "relationship_conflict")
-			}
-		}
-		var existingID string
-		err = tx.GetContext(ctx, &existingID, `
-   SELECT id FROM friend_requests WHERE status='pending' AND
-    ((requester_id=$1 AND recipient_id=$2) OR (requester_id=$2 AND recipient_id=$1))
-  `, actor, input.RecipientID)
-		var requestID string
-		if err == nil {
-			request, err := getFriendRequest(ctx, tx, existingID)
-			if err != nil {
-				return err
-			}
-			if request.RequesterID == actor {
-				return NewAPIError(http.StatusConflict, "relationship_conflict")
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE friend_requests SET status='accepted', updated_at=clock_timestamp() WHERE id=$1`, request.ID); err != nil {
-				return err
-			}
-			if err := insertFriendship(ctx, tx, request); err != nil {
-				return err
-			}
-			requestID = request.ID
-		} else if errors.Is(err, sql.ErrNoRows) {
-			requestID = uuid.NewString()
-			if _, err := tx.ExecContext(ctx, `INSERT INTO friend_requests (id, requester_id, recipient_id, status, created_at, updated_at) VALUES ($1,$2,$3,'pending',clock_timestamp(),clock_timestamp())`, requestID, actor, input.RecipientID); err != nil {
-				return err
-			}
+		var request FriendRequest
+		if state.PendingID != nil {
+			// 相手からの申請があれば承認して友達にする
+			request, err = acceptFriendRequest(ctx, tx, *state.PendingID, actor, input.RecipientID)
 		} else {
-			return err
+			err = tx.GetContext(ctx, &request, `INSERT INTO friend_requests (id, requester_id, recipient_id, status, created_at, updated_at) VALUES ($1,$2,$3,'pending',clock_timestamp(),clock_timestamp()) RETURNING id, requester_id, recipient_id, status, created_at, updated_at`, uuid.NewString(), actor, input.RecipientID)
 		}
-		request, err := getFriendRequest(ctx, tx, requestID)
 		if err != nil {
 			return err
 		}
@@ -130,29 +115,25 @@ func transitionFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		request, err = getFriendRequest(ctx, tx, input.RequestID)
-		if err != nil {
+		// ロックの後の読み直しとブロックの確認を1往復で行う
+		var current struct {
+			Status  string `db:"status"`
+			Blocked bool   `db:"blocked"`
+		}
+		if err := tx.GetContext(ctx, &current, `SELECT status, EXISTS(SELECT 1 FROM block_relations WHERE (blocker_id=$2 AND blocked_id=$3) OR (blocker_id=$3 AND blocked_id=$2)) AS blocked FROM friend_requests WHERE id=$1`, request.ID, request.RequesterID, request.RecipientID); err != nil {
 			return err
 		}
-		if request.Status != "pending" {
+		if current.Status != "pending" {
 			return NewAPIError(http.StatusForbidden, "relationship_action_forbidden")
 		}
 		if status == "accepted" {
-			blocked, err := isBlocked(ctx, tx, request.RequesterID, request.RecipientID)
-			if err != nil {
-				return err
-			}
-			if blocked {
+			if current.Blocked {
 				return NewAPIError(http.StatusConflict, "relationship_conflict")
 			}
-			if err := insertFriendship(ctx, tx, request); err != nil {
-				return err
-			}
+			request, err = acceptFriendRequest(ctx, tx, request.ID, request.RequesterID, request.RecipientID)
+		} else {
+			err = tx.GetContext(ctx, &request, `UPDATE friend_requests SET status=$2, updated_at=clock_timestamp() WHERE id=$1 RETURNING id, requester_id, recipient_id, status, created_at, updated_at`, request.ID, status)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE friend_requests SET status=$2, updated_at=clock_timestamp() WHERE id=$1`, request.ID, status); err != nil {
-			return err
-		}
-		request, err = getFriendRequest(ctx, tx, request.ID)
 		if err != nil {
 			return err
 		}

@@ -49,6 +49,19 @@ func beginUserPairTx(ctx context.Context, db *sqlx.DB, actor, target, targetLock
 	if err != nil {
 		return nil, err
 	}
+	if targetLock == lockActiveUserExclusive {
+		// 1往復で2行ともロックする。LockRows は Sort の上で動くので、ID 順にロックされる
+		var lockedIDs []string
+		if err := tx.SelectContext(ctx, &lockedIDs, `SELECT id FROM users WHERE id IN ($1, $2) AND status='active' ORDER BY id FOR NO KEY UPDATE`, actor, target); err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		if len(lockedIDs) != 2 {
+			tx.Rollback()
+			return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
+		}
+		return tx, nil
+	}
 	for _, id := range []string{min(actor, target), max(actor, target)} {
 		lock := lockActiveUserExclusive
 		if id == target {
@@ -72,9 +85,19 @@ func isBlocked(ctx context.Context, db sqlx.QueryerContext, actor, target string
 	return blocked, err
 }
 
-func insertFriendship(ctx context.Context, tx *sqlx.Tx, request FriendRequest) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO friendships (id, user_low_id, user_high_id, source_request_id) VALUES ($1,$2,$3,$4)`, uuid.NewString(), min(request.RequesterID, request.RecipientID), max(request.RequesterID, request.RecipientID), request.ID)
-	return err
+// acceptFriendRequest は申請を承認済みにして友達関係を作り、更新後の申請を返す（1往復）
+func acceptFriendRequest(ctx context.Context, tx *sqlx.Tx, requestID, userA, userB string) (FriendRequest, error) {
+	var request FriendRequest
+	err := tx.GetContext(ctx, &request, `
+  WITH r AS (
+   UPDATE friend_requests SET status='accepted', updated_at=clock_timestamp() WHERE id=$1
+   RETURNING id, requester_id, recipient_id, status, created_at, updated_at
+  ), f AS (
+   INSERT INTO friendships (id, user_low_id, user_high_id, source_request_id) VALUES ($2, $3, $4, $1)
+  )
+  SELECT * FROM r
+ `, requestID, uuid.NewString(), min(userA, userB), max(userA, userB))
+	return request, err
 }
 
 func requireRelationshipChange(result sql.Result, err error, status int, code string) error {
