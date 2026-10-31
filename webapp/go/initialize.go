@@ -27,6 +27,10 @@ func initializeHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := fillDisplayNameSearch(c.Request().Context(), h); err != nil {
 			return err
 		}
+		// reset.sql がテーブルを変えたあとに古いプリペアド文で "cached plan must not change result type" に
+		// ならないよう、空いている接続を捨てて文を作り直させる
+		h.DB.SetMaxIdleConns(0)
+		h.DB.SetMaxIdleConns(dbPoolSize(h.Config.Region))
 
 		// Set language to the implementation language.
 		// Agents optimizing this app: set agent, harness, and model to the names used.

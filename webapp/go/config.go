@@ -31,6 +31,13 @@ func ConfigFromEnv() *Config {
 }
 
 func (c *Config) DatabaseDSN() string {
+	// s1 (asia) は DB まで 1ms で、europe・america の /api も s1 で処理する。毎回プランを作り直すと s4 の CPU を
+	// 食う（#68: 10ms 以上の bind だけで 340秒）ので、接続ごとにプリペアした文を使い回す。s2・s3 は画像の取得だけで、
+	// プリペアの往復（100ms）が割に合わないので exec のまま
+	mode := "exec"
+	if c.Region == "asia" {
+		mode = "cache_statement"
+	}
 	u := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(c.DBUser, c.DBPassword),
@@ -38,7 +45,7 @@ func (c *Config) DatabaseDSN() string {
 		Path:   "/" + c.DBName,
 		// DB is ~100ms away from s2/s3; skip the per-connection prepare round trip (#21)
 		// No TLS: the manual does not ask for it, and the connection still goes through the router (#60)
-		RawQuery: "default_query_exec_mode=exec&sslmode=disable",
+		RawQuery: "default_query_exec_mode=" + mode + "&sslmode=disable",
 	}
 	return u.String()
 }

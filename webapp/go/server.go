@@ -19,6 +19,14 @@ type HandlerContext struct {
 	Notifications *notificationHub
 }
 
+// s1 (asia) は全リージョンの /api を処理するので 60。s2・s3 は画像の取得だけなので 30
+func dbPoolSize(region string) int {
+	if region == "asia" {
+		return 60
+	}
+	return 30
+}
+
 func NewServer(config *Config) *echo.Echo {
 	if !validRegion(config.Region) {
 		panic("invalid server region: " + config.Region)
@@ -35,8 +43,8 @@ func NewServer(config *Config) *echo.Echo {
 		panic("failed to parse database config: " + err.Error())
 	}
 	db := sqlx.NewDb(stdlib.OpenDB(*pgxConfig, stdlib.OptionShouldPing(shouldPingIdleConn)), "pgx")
-	db.SetMaxOpenConns(30)
-	db.SetMaxIdleConns(30)
+	db.SetMaxOpenConns(dbPoolSize(config.Region))
+	db.SetMaxIdleConns(dbPoolSize(config.Region))
 	publishDBStats(db)
 	// 全台再起動で DB (s4) より先に起動しても落ちないよう、最大60秒待つ
 	for i := 0; i < 60; i++ {
