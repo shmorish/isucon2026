@@ -198,11 +198,29 @@ func getImageData(id string) ([]byte, bool) {
 		return nil, false
 	}
 	data, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil || !completeImage(data) {
 		return nil, false
 	}
 	imageDataCache.put(id, data)
 	return data, true
+}
+
+var (
+	jpegStart, jpegEnd = []byte{0xff, 0xd8}, []byte{0xff, 0xd9}
+	pngStart, pngEnd   = []byte("\x89PNG\r\n\x1a\n"), []byte("IEND\xaeB`\x82")
+)
+
+// completeImage は画像が最後まで書けているかを見る。ファイルは fsync しないので、電源断のあとに
+// 長さ0や途中までのファイルが残りうる。そういうファイルは使わずに DB から読み直す
+// （s4 で抜き出した 914枚はすべて JPEG で、すべて FFD8 で始まり FFD9 で終わっていた）
+func completeImage(b []byte) bool {
+	switch {
+	case bytes.HasPrefix(b, jpegStart):
+		return bytes.HasSuffix(b, jpegEnd)
+	case bytes.HasPrefix(b, pngStart):
+		return bytes.HasSuffix(b, pngEnd)
+	}
+	return false
 }
 
 // putImageData は DB から読んだ（またはコミット済みの）画像本体をメモリに入れ、裏でディスクに書く
@@ -211,7 +229,8 @@ func putImageData(id string, data []byte) {
 	go writeImageFile(id, data)
 }
 
-// 一時ファイルに書いて fsync してから rename するので、途中で落ちても中途半端なファイルは残らない
+// 一時ファイルに書いてから rename する。fsync はしない（1枚ごとの fsync で s1 の iowait が 0.2% → 11% に上がった）。
+// 電源断で中身が欠けたファイルは、読むときに completeImage で弾く
 func writeImageFile(id string, data []byte) {
 	path, ok := imageDiskPath(id)
 	if !ok {
@@ -229,9 +248,6 @@ func writeImageFile(id string, data []byte) {
 		return
 	}
 	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Sync()
-	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}

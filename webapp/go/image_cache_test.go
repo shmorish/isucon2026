@@ -54,9 +54,9 @@ func TestBoundedCacheCountsBytes(t *testing.T) {
 func TestImageDiskCacheRoundTripAndRejectsNonUUID(t *testing.T) {
 	imageDiskCacheDir = t.TempDir()
 	id := "0123abcd-0000-4000-8000-000000000001"
-	writeImageFile(id, []byte("jpeg"))
+	writeImageFile(id, []byte("\xff\xd8jpeg\xff\xd9"))
 	imageDataCache = newBoundedCache(imageDataCacheMaxBytes, func(v []byte) int { return len(v) })
-	if data, ok := getImageData(id); !ok || !bytes.Equal(data, []byte("jpeg")) {
+	if data, ok := getImageData(id); !ok || !bytes.Equal(data, []byte("\xff\xd8jpeg\xff\xd9")) {
 		t.Fatalf("got %q, %v from disk", data, ok)
 	}
 	for _, bad := range []string{"../../etc/passwd", "0123ABCD-0000-4000-8000-000000000001", "x"} {
@@ -66,8 +66,18 @@ func TestImageDiskCacheRoundTripAndRejectsNonUUID(t *testing.T) {
 		}
 	}
 	entries, _ := filepath.Glob(filepath.Join(imageDiskCacheDir, "*", "*"))
-	if len(entries) != 1 {
+	if len(entries) != 1 { // only the valid UUID was written
 		t.Fatalf("files on disk: %v", entries)
+	}
+	// a truncated file (no JPEG end marker) is not used
+	id3 := "0123abcd-0000-4000-8000-000000000003"
+	os.MkdirAll(filepath.Join(imageDiskCacheDir, "01"), 0o755)
+	os.WriteFile(filepath.Join(imageDiskCacheDir, "01", id3), []byte("\xff\xd8trunc"), 0o644)
+	os.WriteFile(filepath.Join(imageDiskCacheDir, "01", "0123abcd-0000-4000-8000-000000000004"), nil, 0o644)
+	for _, id := range []string{id3, "0123abcd-0000-4000-8000-000000000004"} {
+		if _, ok := getImageData(id); ok {
+			t.Fatalf("%s: incomplete file was used", id)
+		}
 	}
 	// putImageData writes in the background
 	id2 := "0123abcd-0000-4000-8000-000000000002"
