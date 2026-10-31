@@ -2,6 +2,7 @@ package isureal
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/labstack/echo/v5"
@@ -26,6 +27,8 @@ func APIErrorHandler(c *echo.Context, err error) {
 	if response, _ := echo.UnwrapResponse(c.Response()); response != nil && response.Committed {
 		return
 	}
+	// 本文を読まずに返すと Go は応答後に接続を閉じ、本文を送信中の nginx が 502 にする。nginx の client_max_body_size まで読み捨てる
+	io.Copy(io.Discard, io.LimitReader(c.Request().Body, 32<<20))
 	status, message := http.StatusInternalServerError, err.Error()
 	var apiErr *APIError
 	var echoErr echo.HTTPStatusCoder
