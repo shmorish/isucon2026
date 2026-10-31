@@ -1,6 +1,9 @@
 -- 検索用に正規化した表示名。値は initializeHandler が Go で埋める（Go の case fold を SQL で再現できないため）
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name_search text;
 
+-- 画像は圧縮済み（JPEG/PNG）で pglz では縮まず、試すだけで INSERT が 11ms → 5ms になる（#35）。全パーティションに効く
+ALTER TABLE image_objects ALTER COLUMN data SET STORAGE EXTERNAL;
+
 -- 追加インデックス（init.sh は reset.sql しか流さないのでここに書く）
 CREATE INDEX IF NOT EXISTS realmojis_image_id ON realmojis(image_id);
 CREATE INDEX IF NOT EXISTS posts_image_id ON posts(image_id);
