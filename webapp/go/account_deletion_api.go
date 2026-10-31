@@ -37,6 +37,8 @@ func deleteAccountHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		// 退会した人の画像と、その人の投稿に付いた RealMoji の画像が見えなくなる。退会は少ないので全部忘れる（#89）
+		imageVisibility.revokeAll()
 		return c.NoContent(http.StatusNoContent)
 	}
 }

@@ -68,7 +68,14 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		// 削除された投稿の画像で、署名を確認する前に 403 にするか（abuse の記録の有無）が変わらないようにするため
 		known, hit := imageMetaCache.get(input.ImageID)
 		checked := false
-		if hit && cached {
+		// 「見せてよい」と覚えている画像は DB を引かない（#89）。署名の確認は下で必ず行う。
+		// それ以外（覚えていない・本体が手元にない）は今までの経路に落とす
+		visibilityGen := imageVisibility.generation()
+		if v, ok := imageVisibility.get(input.ImageID); ok && cached {
+			meta = imageMetaRow{SecretKeyHash: v.SecretKeyHash, OwnerUserID: v.Owner, MediaType: v.MediaType, CreatedAt: v.CreatedAt, Visible: true}
+			checked = true
+		}
+		if !checked && hit && cached {
 			var owner imageOwnerRow
 			err = h.DB.GetContext(ctx, &owner, imageOwnerQuery, input.ImageID, known.Owner)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -77,6 +84,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			if err == nil && owner.Visible {
 				meta = imageMetaRow{SecretKeyHash: owner.SecretKeyHash, OwnerUserID: known.Owner, MediaType: known.MediaType, CreatedAt: known.CreatedAt, Visible: true}
 				checked = true
+				imageVisibility.put(input.ImageID, visibleImage{SecretKeyHash: owner.SecretKeyHash, Owner: known.Owner, MediaType: known.MediaType, CreatedAt: known.CreatedAt}, visibilityGen)
 			}
 		}
 		if !checked {
@@ -112,6 +120,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 			imageCreatedAtCache.put(input.ImageID, meta.CreatedAt)
 			imageMetaCache.put(input.ImageID, imageMeta{Owner: meta.OwnerUserID, MediaType: meta.MediaType, CreatedAt: meta.CreatedAt})
+			if meta.Visible {
+				imageVisibility.put(input.ImageID, visibleImage{SecretKeyHash: meta.SecretKeyHash, Owner: meta.OwnerUserID, MediaType: meta.MediaType, CreatedAt: meta.CreatedAt}, visibilityGen)
+			}
 		}
 		key, err := imageSigningKey(meta.SecretKeyHash)
 		if err != nil {
@@ -203,6 +214,7 @@ func rememberUploadedImageMeta(id, owner string, createdAt time.Time) {
 func resetImageMetaCaches() {
 	imageCreatedAtCache.reset()
 	imageMetaCache.reset()
+	imageVisibility.revokeAll()
 }
 
 type imageMetaQuery struct{ byID, byCreatedAt string }
