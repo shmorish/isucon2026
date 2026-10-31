@@ -35,15 +35,21 @@ type notificationPollRow struct {
 	CreatedAt       sql.NullTime   `db:"created_at"`
 }
 
+// A notification is the region's active window that started after the subscriber connected, for a user who is still
+// active in that region (#82). The window opener used to insert one row per active user with created_at = starts_at;
+// only those rows of the active window, created after connecting, were ever delivered. The id is fixed per window and
+// user so a reconnect sees the same one.
+// ponytail: a user who leaves the region and comes back between connecting and the window opening gets a notification
+// the row INSERT would not have made; the poll runs every 200ms, so that gap is tiny
 const notificationPollQuery = `
 SELECT s.idx, u.id IS NOT NULL AS valid, x.id, x.posting_window_id, x.region, x.created_at
 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) WITH ORDINALITY AS s(user_id, region, connected_at, idx)
 LEFT JOIN users u ON u.id = s.user_id AND u.status = 'active' AND u.region = s.region
 LEFT JOIN LATERAL (
-  SELECT n.id, n.posting_window_id, w.region, n.created_at
-  FROM notifications n JOIN posting_windows w ON w.id = n.posting_window_id
-  WHERE n.user_id = s.user_id AND n.created_at > s.connected_at AND w.ended_at IS NULL
-  ORDER BY n.created_at, n.id LIMIT 1
+  SELECT md5(w.id || ':' || s.user_id)::uuid::text AS id, w.id AS posting_window_id, w.region, w.starts_at AS created_at
+  FROM posting_windows w
+  WHERE w.region = s.region AND w.ended_at IS NULL AND w.starts_at > s.connected_at
+  LIMIT 1
 ) x ON true
 WHERE u.id IS NULL OR x.id IS NOT NULL
 `

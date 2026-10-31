@@ -22,7 +22,7 @@ type PostingWindow struct {
 // it must exclude cannot drift apart.
 //
 // Order: post create locks its users row, then class 3 shared, then the window
-// row FOR SHARE. The window opener takes class 1, inserts the notifications,
+// row FOR SHARE. The window opener takes class 1, inserts the window,
 // then takes class 3 and only then row-locks the window. A class 3 holder never
 // waits for class 1 or for anything the opener holds, so there is no cycle.
 const (
@@ -83,8 +83,8 @@ func lockRegionPostsShared(ctx context.Context, tx *sqlx.Tx, region string) erro
 // lockRegionUsers is taken by opening a posting window; the shared lock by
 // anything that changes which users are active in a region (registration via
 // lockRegistrationSQL, deletion and region change via lockAllRegionUsersShared),
-// so a window's notifications cover exactly the region's active users when it
-// opens. lockRegionUsersShared itself is only used by region_lock_test.go.
+// so a window opens against a fixed set of the region's active users.
+// lockRegionUsersShared itself is only used by region_lock_test.go.
 func lockRegionUsers(ctx context.Context, tx *sqlx.Tx, region string) error {
 	_, err := tx.ExecContext(ctx, lockRegionUsersSQL, region)
 	return err

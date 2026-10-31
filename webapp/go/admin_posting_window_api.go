@@ -58,8 +58,10 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		// Ending the current window row-locks it until commit, and posts in the region wait on that lock (FOR SHARE).
-		// So the new window is inserted as ended (clear of posting_windows_one_active_region), the notifications go in,
-		// and only then is the current window ended and the new one made active.
+		// So the new window is inserted as ended (clear of posting_windows_one_active_region) and only then is the
+		// current window ended and the new one made active.
+		// Notifications are not inserted: notificationPollQuery derives them from the active window (#82). The INSERT of
+		// one row per active user took 281ms on average (2.4s max) while holding the region's users lock.
 		windowID := uuid.NewString()
 		if _, err := tx.ExecContext(ctx, `
    INSERT INTO posting_windows (id, region, local_date, starts_at, on_time_deadline, ended_at)
@@ -67,13 +69,7 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
   `, windowID, region, localDate, startsAt, startsAt.Add(time.Duration(seconds)*time.Second)); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `
-   INSERT INTO notifications (id, user_id, posting_window_id, created_at)
-   SELECT gen_random_uuid()::text, id, $2, $3 FROM users WHERE region = $1 AND status = 'active'
-  `, region, windowID, startsAt); err != nil {
-			return err
-		}
-		// Not before the notifications INSERT: posts in the region queue behind this lock until commit.
+		// Posts in the region queue behind this lock until commit.
 		if err := lockRegionPosts(ctx, tx, region); err != nil {
 			return err
 		}
