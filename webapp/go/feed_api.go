@@ -55,6 +55,9 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
+		if !viewer.HasPostedToday {
+			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
+		}
 		following := map[string]bool{}
 		if input.Feed == "following" {
 			var followeeIDs []string
@@ -69,11 +72,13 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		if ranked {
 			beforePostedAt, beforeID = nil, ""
 		}
+		feedFilter, feedArgs := feedCandidateFilter(viewer, following, input.Feed)
 		posts, err := selectPostsWithAuthor(ctx, h.DB, `
    AND p.author_id <> $1 AND w.ended_at IS NULL
    AND ($2::timestamptz IS NULL OR (p.posted_at, p.id) < ($2, $3))
+   `+feedFilter+`
    ORDER BY p.posted_at DESC, p.id DESC
-  `, viewer.ID, beforePostedAt, beforeID)
+  `, append([]any{viewer.ID, beforePostedAt, beforeID}, feedArgs...)...)
 		if err != nil {
 			return err
 		}
@@ -184,6 +189,31 @@ func recommendationScores(ctx context.Context, db sqlx.QueryerContext, viewer vi
 		scores[post.ID] = 10*friendEngagements[post.ID] + 3*int64(viewer.MutualFriends[post.AuthorID]) + min(connections[post.AuthorID], 30)
 	}
 	return scores, nil
+}
+
+func feedCandidateFilter(viewer viewerContext, following map[string]bool, feed string) (string, []any) {
+	switch feed {
+	case "public":
+		return `AND p.visibility = 'public'`, nil
+	case "following":
+		return `AND p.author_id = ANY($4)`, []any{mapKeys(following)}
+	case "friends":
+		return `AND p.author_id = ANY($4)`, []any{mapKeys(viewer.Friends)}
+	case "friends-of-friends":
+		return `AND p.author_id = ANY($4)`, []any{mapKeys(viewer.FriendsOfFriends)}
+	default:
+		return "", nil
+	}
+}
+
+func mapKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key, ok := range set {
+		if ok {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func matchesFeed(viewer viewerContext, following map[string]bool, post Post, feed string) bool {

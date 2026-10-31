@@ -9,6 +9,7 @@ CREATE INDEX IF NOT EXISTS block_relations_blocked_id ON block_relations(blocked
 CREATE INDEX IF NOT EXISTS follows_followee_id ON follows(followee_id);
 CREATE INDEX IF NOT EXISTS friend_requests_recipient_id_status ON friend_requests(recipient_id, status);
 CREATE INDEX IF NOT EXISTS friend_requests_requester_id_status ON friend_requests(requester_id, status);
+CREATE INDEX IF NOT EXISTS posts_posting_window_id_author_id ON posts(posting_window_id, author_id);
 
 SET session_replication_role = replica;
 

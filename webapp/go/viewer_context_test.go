@@ -2,6 +2,7 @@ package isureal
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -30,5 +31,42 @@ func TestAddFriendFriendshipsCountsMutualFriendsExceptViewer(t *testing.T) {
 	wantMutual := map[string]int{"a": 1, "b": 1, "x": 2}
 	if !reflect.DeepEqual(viewer.FriendsOfFriends, wantFoF) || !reflect.DeepEqual(viewer.MutualFriends, wantMutual) {
 		t.Fatalf("fof=%v mutual=%v", viewer.FriendsOfFriends, viewer.MutualFriends)
+	}
+}
+
+func TestFeedCandidateFilterKeepsEveryVisibleFeedPost(t *testing.T) {
+	viewer := viewerContext{
+		User:             User{ID: "v"},
+		HasPostedToday:   true,
+		Friends:          map[string]bool{"f1": true, "f2": true},
+		FriendsOfFriends: map[string]bool{"v": true, "f1": true, "ff1": true, "ff2": true},
+		MutualFriends:    map[string]int{},
+		Blocked:          map[string]bool{"ff2": true},
+	}
+	following := map[string]bool{"c1": true, "f2": true}
+	authors := []string{"f1", "f2", "ff1", "ff2", "c1", "x"}
+	visibilities := []string{"public", "friends", "friends_of_friends", "other"}
+	for _, feed := range []string{"friends", "friends-of-friends", "public", "following"} {
+		filter, args := feedCandidateFilter(viewer, following, feed)
+		for _, author := range authors {
+			for _, visibility := range visibilities {
+				post := Post{AuthorID: author, Visibility: visibility}
+				if !viewer.canView(post) || !matchesFeed(viewer, following, post, feed) {
+					continue
+				}
+				var kept bool
+				switch filter {
+				case `AND p.visibility = 'public'`:
+					kept = visibility == "public"
+				case `AND p.author_id = ANY($4)`:
+					kept = slices.Contains(args[0].([]string), author)
+				default:
+					t.Fatalf("unexpected filter %q", filter)
+				}
+				if !kept {
+					t.Errorf("feed %s drops visible post by %s (%s)", feed, author, visibility)
+				}
+			}
+		}
 	}
 }
