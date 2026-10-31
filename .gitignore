@@ -15,11 +15,10 @@ node_modules/
 *.tar.gz
 *.sql.gz
 
-# ISUReal: 各言語の依存とビルド成果物、macOS の AppleDouble
+# ISUReal: ビルド成果物、macOS の AppleDouble
 ._*
 /webapp/go/isureal
 /webapp/rust/target/
-/webapp/rust/isureal
 /webapp/perl/local/
 /webapp/php/vendor/
 /webapp/python/.venv/
