@@ -26,6 +26,13 @@ CREATE INDEX IF NOT EXISTS posts_posting_window_id_author_id ON posts(posting_wi
 CREATE INDEX IF NOT EXISTS notifications_created_at_brin ON notifications USING brin(created_at);
 CREATE INDEX IF NOT EXISTS comments_created_at_brin ON comments USING brin(created_at);
 CREATE INDEX IF NOT EXISTS realmojis_created_at_brin ON realmojis USING brin(created_at);
+-- Memories/export load the active RealMojis of up to ~50 posts at once; a post's rows are scattered over the heap, so each
+-- row cost a random heap read (16 posts: 8.5 of 9.1 ms on disk, #92). Covering every selected column makes it an
+-- index-only scan over the post's 1-2 leaf pages. Comments get no such index: body is up to 1000 runes (~3 KB),
+-- over the 2704-byte btree tuple limit, so a long comment's INSERT could fail.
+CREATE INDEX IF NOT EXISTS realmojis_post_active_cover ON realmojis (post_id)
+  INCLUDE (id, reactor_id, image_id, reaction_type, created_at, replaced_at, deleted_at)
+  WHERE replaced_at IS NULL AND deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS posts_created_at_brin ON posts USING brin(created_at);
 -- Not led by user_id: opening a window would touch one leaf per region user, each a full-page image after a checkpoint (#39).
 -- No foreign keys: the window-open INSERT cannot violate them, and each check locks and dirties a users row.
