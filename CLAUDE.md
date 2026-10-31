@@ -57,7 +57,8 @@ for h in s1 s2 s3 s4; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & 
 
 - SQL は `ssh s1 "sudo mysql <DB名> -e '<SQL>'"` で打つ。DB 名は `s1/collect.md` のテーブル一覧か、環境変数ファイルで確かめる。DB を別サーバーに移した後は、そのサーバー（例: s2）で打つ
 - インデックスを足す前に、slp の上位クエリを `EXPLAIN` で確かめる（`type: ALL` や `rows` が大きいものが候補）。足した後も `EXPLAIN` で使われていることを確かめる
-- 重い `SELECT` を試しに打つときは、ベンチ中を避ける
+- 重い `SELECT` を試しに打つときは、ベンチ中を避ける。ベンチが動いているかわからないときは、動いていると見なす
+- テーブル全体の `count(*)` は打たない（1本で 2〜3秒ディスクを読み、キャッシュに載っている画像のページを追い出す。#47）。件数はだいたいでよいので `ssh s4 "sudo -u postgres psql <DB名> -c 'SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY 2 DESC'"` で見る（統計なのでディスクを読まない）
 
 ## スキーマ変更のルール
 
