@@ -18,15 +18,17 @@ CREATE INDEX IF NOT EXISTS posts_created_at_brin ON posts USING brin(created_at)
 
 SET session_replication_role = replica;
 
+SELECT coalesce(created_at::text, 'infinity') AS boundary FROM initial_data_boundary \gset
+
 BEGIN;
 
 TRUNCATE ip_bans, login_sessions, administrator_sessions, friendships, friend_requests, follows, block_relations;
 
-DELETE FROM notifications WHERE created_at > (SELECT created_at FROM initial_data_boundary);
-DELETE FROM comments WHERE created_at > (SELECT created_at FROM initial_data_boundary);
-DELETE FROM realmojis WHERE created_at > (SELECT created_at FROM initial_data_boundary);
-DELETE FROM posts WHERE created_at > (SELECT created_at FROM initial_data_boundary);
-DELETE FROM posting_windows WHERE created_at > (SELECT created_at FROM initial_data_boundary);
+DELETE FROM notifications WHERE created_at > :'boundary';
+DELETE FROM comments WHERE created_at > :'boundary';
+DELETE FROM realmojis WHERE created_at > :'boundary';
+DELETE FROM posts WHERE created_at > :'boundary';
+DELETE FROM posting_windows WHERE created_at > :'boundary';
 DO $$
 DECLARE partition_name text;
 BEGIN
@@ -38,8 +40,8 @@ BEGIN
     EXECUTE format('TRUNCATE %I', partition_name);
   END LOOP;
 END $$;
-DELETE FROM image_objects WHERE created_at > (SELECT created_at FROM initial_data_boundary);
-DELETE FROM users WHERE created_at > (SELECT created_at FROM initial_data_boundary);
+DELETE FROM image_objects WHERE created_at > :'boundary';
+DELETE FROM users WHERE created_at > :'boundary';
 
 UPDATE users u
 SET display_name = i.display_name, bio = i.bio, profile_image_id = i.profile_image_id, region = i.region,
