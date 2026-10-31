@@ -105,6 +105,7 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		cacheUploadedImage(imageID, data)
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))
 	}
 }

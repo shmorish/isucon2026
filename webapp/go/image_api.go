@@ -1,6 +1,7 @@
 package isureal
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -8,6 +9,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -137,7 +140,7 @@ func newImageMetaQuery(cols string) imageMetaQuery {
 	}
 }
 
-// INSERT 時の値は入れない。DB 側でマイクロ秒に丸められて一致しなくなるため、DB から読んだ値だけを覚える。
+// INSERT に渡した値は入れない。DB 側でマイクロ秒に丸められて一致しなくなるため、DB から読んだ値（RETURNING を含む）だけを覚える。
 // id は UUID で再利用されず created_at も変わらないので、初期化で消えた画像の値が残っても該当行なしになるだけ。
 const imageCreatedAtCacheMaxEntries = 1 << 20
 
@@ -168,7 +171,24 @@ func (c *timeCache) put(k string, v time.Time) {
 }
 
 // ponytail: 上限を超えたら全消去する。ヒット率が落ちるようなら LRU にする
-const imageDataCacheMaxBytes = 512 << 20
+// Go のヒープは画像の長さの約1.08倍（実際の投稿・RealMoji のサイズ分布で計測）。
+// 全消去直後は GOGC=100 だと最大で生存ヒープの2倍まで膨らむので、メモリ 3.8GB・swap なしでも
+// 収まるよう GC の目標を imageHeapMemoryLimit で頭打ちにする
+const imageDataCacheMaxBytes = 1 << 30
+
+const imageHeapMemoryLimit = 2560 << 20
+
+func init() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(imageHeapMemoryLimit)
+	}
+}
+
+// アップロードを受けたサーバーでは、コミットが成功してから DB に書いたのと同じバイト列を入れる。
+// io.ReadAll の余った容量まで抱えないようにコピーする
+func cacheUploadedImage(id string, data []byte) {
+	imageDataCache.put(id, bytes.Clone(data))
+}
 
 var imageDataCache = &bytesCache{m: map[string][]byte{}}
 

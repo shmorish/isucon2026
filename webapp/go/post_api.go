@@ -119,6 +119,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		if window.Active != 0 || window.Deleted >= 2 || postedAt.Before(window.StartsAt) {
 			return NewAPIError(http.StatusConflict, "post_slot_unavailable")
 		}
+		imageID := uuid.NewString()
 		var post Post
 		if err := tx.GetContext(ctx, &post, `
    WITH image AS (
@@ -130,13 +131,15 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
      RETURNING *
    )
    SELECT `+postColumns+` FROM p JOIN posting_windows w ON w.id = p.posting_window_id
-  `, uuid.NewString(), userID, imageData, postedAt, uuid.NewString(), window.ID, input.Caption, input.Visibility,
+  `, imageID, userID, imageData, postedAt, uuid.NewString(), window.ID, input.Caption, input.Visibility,
 			location.Kind, location.Latitude, location.Longitude, location.Locality); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		cacheUploadedImage(imageID, imageData)
+		imageCreatedAtCache.put(imageID, post.PostedAt)
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))
 	}
 }
