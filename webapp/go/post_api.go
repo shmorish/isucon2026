@@ -143,7 +143,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		postedAt := time.Now().UTC()
 		imageID := uuid.NewString()
-		args := []any{user.ID, user.Region, imageID, imageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
+		args := []any{binaryImage, user.ID, user.Region, imageID, imageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
 			location.Kind, location.Latitude, location.Longitude, location.Locality}
 		var post Post
 		err = tx.GetContext(ctx, &post, createPostQuery, args...)

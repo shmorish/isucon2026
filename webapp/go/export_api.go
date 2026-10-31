@@ -177,7 +177,7 @@ func fetchExportImages(ctx context.Context, db *sqlx.DB, posts []Post) (map[stri
 			ID   string `db:"id"`
 			Data []byte `db:"data"`
 		}
-		if err := db.SelectContext(ctx, &rows, query, args...); err != nil {
+		if err := db.SelectContext(ctx, &rows, query, append([]any{binaryImage}, args...)...); err != nil {
 			return err
 		}
 		for _, r := range rows {

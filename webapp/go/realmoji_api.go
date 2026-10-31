@@ -96,7 +96,7 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		if _, err := tx.ExecContext(ctx, `
    WITH image AS (INSERT INTO image_objects(id,owner_user_id,data,media_type) VALUES($3,$2,$4,'image/jpeg'))
    UPDATE realmojis SET replaced_at=clock_timestamp() WHERE post_id=$1 AND reactor_id=$2 AND replaced_at IS NULL AND deleted_at IS NULL
-  `, post.ID, actor, imageID, data); err != nil {
+  `, binaryImage, post.ID, actor, imageID, data); err != nil {
 			return err
 		}
 		var reaction RealMoji

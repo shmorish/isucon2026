@@ -61,9 +61,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			q = imageMetaQueryMetaOnly
 		}
 		if createdAt, ok := imageCreatedAtCache.get(input.ImageID); ok {
-			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, input.ImageID, createdAt)
+			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, binaryImage, input.ImageID, createdAt)
 		} else {
-			err = h.DB.GetContext(ctx, &meta, q.byID, input.ImageID)
+			err = h.DB.GetContext(ctx, &meta, q.byID, binaryImage, input.ImageID)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")

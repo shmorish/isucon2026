@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Config struct {
@@ -40,6 +42,12 @@ func (c *Config) DatabaseDSN() string {
 	}
 	return u.String()
 }
+
+// binaryImage goes first in the args of statements that carry image bytes, so bytea is sent and received in binary
+// instead of \x hex text (#60). Not the default mode: on s2/s3 each new statement and connection costs an extra
+// ~100ms describe round trip (#21). Not cache_statement: a named prepared statement can fail with "cached plan must
+// not change result type" after /api/initialize alters a table; this one re-parses an unnamed statement every time.
+const binaryImage = pgx.QueryExecModeCacheDescribe
 
 func envOrDefault(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
