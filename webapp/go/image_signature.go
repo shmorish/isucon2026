@@ -32,21 +32,33 @@ var (
 	imageSignatureCache = map[string][]byte{}
 )
 
-func imageSignature(key []byte, imageID string, exp int64) []byte {
-	cacheKey := string(key) + strconv.FormatInt(exp, 10) + ":" + imageID
+func imageSignatureCacheKey(key []byte, imageID string, exp int64) string {
+	return string(key) + strconv.FormatInt(exp, 10) + ":" + imageID
+}
+
+func cachedImageSignature(cacheKey string) ([]byte, bool) {
 	imageSignatureMu.Lock()
+	defer imageSignatureMu.Unlock()
 	sig, ok := imageSignatureCache[cacheKey]
-	imageSignatureMu.Unlock()
-	if ok {
-		return sig
-	}
-	sig = computeImageSignature(key, imageID, exp)
+	return sig, ok
+}
+
+func storeImageSignature(cacheKey string, sig []byte) {
 	imageSignatureMu.Lock()
+	defer imageSignatureMu.Unlock()
 	if len(imageSignatureCache) >= imageSignatureCacheMax {
 		clear(imageSignatureCache)
 	}
 	imageSignatureCache[cacheKey] = sig
-	imageSignatureMu.Unlock()
+}
+
+func imageSignature(key []byte, imageID string, exp int64) []byte {
+	cacheKey := imageSignatureCacheKey(key, imageID, exp)
+	if sig, ok := cachedImageSignature(cacheKey); ok {
+		return sig
+	}
+	sig := computeImageSignature(key, imageID, exp)
+	storeImageSignature(cacheKey, sig)
 	return sig
 }
 

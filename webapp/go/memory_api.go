@@ -126,47 +126,73 @@ func listMemories(c *echo.Context, h *HandlerContext, start, end time.Time, befo
 	} else if err := acceptFoldedSession(c, h, true, rows[0].sessionColumns); err != nil {
 		return response, err
 	}
-	items := make([]memoryPostResponse, 0, len(rows))
+	response.HasMore = len(rows) > 50
+	if response.HasMore {
+		rows = rows[:50]
+	}
+	posts := make([]PostWithAuthor, 0, len(rows))
 	for _, row := range rows {
-		post := row.PostWithAuthor
-		if err := post.Author.setImageKey(); err != nil {
+		if err := row.Author.setImageKey(); err != nil {
 			return response, err
 		}
-		items = append(items, memoryPostResponse{
-			createPostResponse: newPostResponse(post.Post, post.Author),
-			RealMojis:          make([]replaceRealMojiResponse, 0),
-			Comments:           make([]createCommentResponse, 0),
-		})
+		posts = append(posts, row.PostWithAuthor)
 	}
-	response.HasMore = len(items) > 50
-	if response.HasMore {
-		items = items[:50]
-	}
-	if err := loadMemoryInteractions(ctx, h.DB, items); err != nil {
+	items, err := loadMemoryItems(ctx, h.DB, posts)
+	if err != nil {
 		return response, err
 	}
 	response.Items = items
 	return response, nil
 }
 
-func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items []memoryPostResponse) error {
-	if len(items) == 0 {
-		return nil
+func loadMemoryItems(ctx context.Context, db sqlx.QueryerContext, posts []PostWithAuthor) ([]memoryPostResponse, error) {
+	items := make([]memoryPostResponse, 0, len(posts))
+	if len(posts) == 0 {
+		return items, nil
 	}
-	postIDs := make([]string, len(items))
-	itemByPostID := make(map[string]*memoryPostResponse, len(items))
-	for i := range items {
-		postIDs[i] = items[i].ID
-		itemByPostID[items[i].ID] = &items[i]
+	postIDs := make([]string, len(posts))
+	for i, post := range posts {
+		postIDs[i] = post.ID
 	}
 
 	query, args, err := sqlx.In(`AND r.post_id IN (?) ORDER BY r.created_at DESC, r.id DESC`, postIDs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	reactions, err := selectCurrentRealMojis(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	query, args, err = sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
+	if err != nil {
+		return nil, err
+	}
+	comments, err := selectCommentsWithAuthor(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
+	if err != nil {
+		return nil, err
+	}
+
+	// 署名は組み立てる前に1往復でまとめて取り寄せる（#48）
+	toSign := make([]imageToSign, 0, 2*(len(posts)+len(reactions))+len(comments))
+	for _, post := range posts {
+		toSign = appendImagesToSign(toSign, post.Author, post.ImageID)
+	}
+	for _, reaction := range reactions {
+		toSign = appendImagesToSign(toSign, reaction.Reactor, reaction.ImageID)
+	}
+	for _, comment := range comments {
+		toSign = appendImagesToSign(toSign, comment.Author)
+	}
+	prefetchImageSignatures(ctx, toSign)
+
+	itemByPostID := make(map[string]*memoryPostResponse, len(posts))
+	for _, post := range posts {
+		items = append(items, memoryPostResponse{
+			createPostResponse: newPostResponse(post.Post, post.Author),
+			RealMojis:          make([]replaceRealMojiResponse, 0),
+			Comments:           make([]createCommentResponse, 0),
+		})
+		itemByPostID[post.ID] = &items[len(items)-1]
 	}
 	for _, reaction := range reactions {
 		item := itemByPostID[reaction.PostID]
@@ -174,20 +200,11 @@ func loadMemoryInteractions(ctx context.Context, db sqlx.QueryerContext, items [
 			item.RealMojis = append(item.RealMojis, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
 		}
 	}
-
-	query, args, err = sqlx.In(`AND c.post_id IN (?) ORDER BY c.created_at, c.id`, postIDs)
-	if err != nil {
-		return err
-	}
-	comments, err := selectCommentsWithAuthor(ctx, db, sqlx.Rebind(sqlx.DOLLAR, query), args...)
-	if err != nil {
-		return err
-	}
 	for _, comment := range comments {
 		item := itemByPostID[comment.PostID]
 		if len(item.Comments) < 50 {
 			item.Comments = append(item.Comments, newCommentResponse(comment.Comment, comment.Author))
 		}
 	}
-	return nil
+	return items, nil
 }

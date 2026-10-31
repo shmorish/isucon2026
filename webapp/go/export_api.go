@@ -38,6 +38,15 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 
+		// 署名の取り寄せ（往復 100ms）は画像の読み込みと並行して進める（#48）
+		toSign := make([]imageToSign, 0, len(posts))
+		for _, post := range posts {
+			toSign = appendImagesToSign(toSign, author, post.ImageID)
+		}
+		var prefetched sync.WaitGroup
+		prefetched.Go(func() { prefetchImageSignatures(ctx, toSign) })
+		defer prefetched.Wait()
+
 		// 画像本体はキャッシュにないものだけ DB から取る
 		images := make(map[string][]byte, len(posts))
 		requested := make(map[string]struct{}, len(posts))
@@ -72,6 +81,8 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 				return err
 			}
 		}
+
+		prefetched.Wait()
 
 		c.Response().Header().Set(echo.HeaderContentType, "application/zip")
 		c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="isureal-posts.zip"`)
