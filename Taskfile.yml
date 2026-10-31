@@ -78,7 +78,8 @@ tasks:
         # s2・s3 の nginx (www-data) が s1 から取り直した画像を image-cache に保存できるようにする (@s1image の proxy_store)
         if grep -qs proxy_store {{.SERVER_ID}}/etc/nginx/sites-available/isureal.conf; then
           mkdir -p "$HOME/image-cache/.nginx-tmp"
-          find "$HOME/image-cache" -maxdepth 1 -type d -exec sudo chgrp www-data {} + -exec chmod 2775 {} +
+          # .nginx-tmp は nginx が先に www-data:root 0700 で作ることがあるので、持ち主ごと揃える
+          find "$HOME/image-cache" -maxdepth 1 -type d -exec sudo chown isucon:www-data {} + -exec sudo chmod 2775 {} +
         fi
         if [ -d {{.SERVER_ID}}/home ]; then cp -r {{.SERVER_ID}}/home/. "$HOME"/; fi
         sudo systemctl daemon-reload
