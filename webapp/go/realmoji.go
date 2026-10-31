@@ -18,9 +18,11 @@ type RealMoji struct {
 	DeletedAt    *time.Time `db:"deleted_at"`
 }
 
+const realMojiColumns = `id, post_id, reactor_id, image_id, reaction_type, created_at, replaced_at, deleted_at`
+
 func getRealMoji(ctx context.Context, db sqlx.QueryerContext, id string) (RealMoji, error) {
 	var reaction RealMoji
-	err := sqlx.GetContext(ctx, db, &reaction, `SELECT id, post_id, reactor_id, image_id, reaction_type, created_at, replaced_at, deleted_at FROM realmojis WHERE id=$1`, id)
+	err := sqlx.GetContext(ctx, db, &reaction, `SELECT `+realMojiColumns+` FROM realmojis WHERE id=$1`, id)
 	return reaction, err
 }
 

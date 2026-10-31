@@ -30,13 +30,29 @@ func getFriendRequest(ctx context.Context, db sqlx.QueryerContext, id string) (F
 // 相手の退会や認証済みへの変更（本人の行の FOR NO KEY UPDATE・UPDATE）とも競合する。
 // 人気ユーザーへのフォローや申請は、相手側が共有ロックなので同時に進む。
 func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, error) {
-	if actor == target || target == "" {
-		return nil, NewAPIError(http.StatusBadRequest, "invalid_relationship")
+	if err := validateUserPair(actor, target); err != nil {
+		return nil, err
 	}
 	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	if err := lockUserPair(ctx, tx, actor, target); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
+}
+
+func validateUserPair(actor, target string) error {
+	if actor == target || target == "" {
+		return NewAPIError(http.StatusBadRequest, "invalid_relationship")
+	}
+	return nil
+}
+
+// lockUserPair takes beginRelationshipTx's locks on a transaction the caller began.
+func lockUserPair(ctx context.Context, tx *sqlx.Tx, actor, target string) error {
 	// 1往復で2行をロックする。対象リストは左から評価されるので、ID の小さい方から先にロックされる
 	lock := func(id string) string {
 		if id == actor {
@@ -52,14 +68,12 @@ func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string)
 	if err := tx.GetContext(ctx, &locked, `SELECT
    (SELECT id FROM users WHERE id=$1 AND status='active' `+lock(low)+`) AS low,
    (SELECT id FROM users WHERE id=$2 AND status='active' `+lock(high)+`) AS high`, low, high); err != nil {
-		tx.Rollback()
-		return nil, err
+		return err
 	}
 	if locked.Low == nil || locked.High == nil {
-		tx.Rollback()
-		return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
+		return NewAPIError(http.StatusNotFound, "relationship_not_found")
 	}
-	return tx, nil
+	return nil
 }
 
 func isBlocked(ctx context.Context, db sqlx.QueryerContext, actor, target string) (bool, error) {
