@@ -127,6 +127,19 @@ tasks:
         fi
         {{.PSQL}} -At -c "SELECT 'pending_restart (反映には再起動が必要): ' || name FROM pg_settings WHERE pending_restart"
 
+  clean-uploads:
+    desc: 's1 で /api/initialize の前に実行。ベンチ中にアップロードされた画像ファイル（image-cache/.uploaded に id が並ぶ）と一覧を消す。初期データの画像は残る'
+    cmds:
+      - |
+        set -e
+        dir=$HOME/image-cache
+        log=$dir/.uploaded
+        if [ ! -f "$log" ]; then echo "clean-uploads: 一覧なし"; exit 0; fi
+        n=$(grep -cE '^[0-9a-f-]{36}$' "$log" || true)
+        grep -E '^[0-9a-f-]{36}$' "$log" | awk -v d="$dir" '{print d "/" substr($0,1,2) "/" $0}' | xargs -r rm -f
+        rm -f "$log"
+        echo "clean-uploads: ${n} 件を削除"; df -h / | tail -1
+
   bench-prep:
     desc: ベンチ前にログと pg_stat_statements を空にする
     cmds:

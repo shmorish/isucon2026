@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -401,7 +400,7 @@ func imageDiskPath(id string) (string, bool) {
 	return filepath.Join(imageDiskCacheDir, id[:2], id), true
 }
 
-// アップロードされた画像の id を1行ずつ残し、次の /initialize でファイルを消す。初期化で DB から行が消えるのに
+// アップロードされた画像の id を1行ずつ残し、ベンチ前に `task clean-uploads`（s1）がファイルとこの一覧を消す。初期化で DB から行が消えるのに
 // ファイルが残り、ベンチ1回で約3GB ずつ増えて s1 のディスクがあふれた（no space left on device で FAIL）
 var uploadedImagesMu sync.Mutex
 
@@ -419,26 +418,6 @@ func recordUploadedImage(id string) error {
 		err = cerr
 	}
 	return err
-}
-
-func removeUploadedImages() error {
-	uploadedImagesMu.Lock()
-	defer uploadedImagesMu.Unlock()
-	data, err := os.ReadFile(uploadedImagesLog())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, id := range strings.Fields(string(data)) {
-		if path, ok := imageDiskPath(id); ok {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-		}
-	}
-	return os.Remove(uploadedImagesLog())
 }
 
 // getImageData はメモリ、なければディスクから画像本体を返す
