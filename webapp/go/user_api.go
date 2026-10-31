@@ -88,7 +88,7 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		defer tx.Rollback()
 		// ユーザー名が一意である必要があります。
-		// Takes the region's shared lock (as lockRegionUsersShared), then the username lock, in one statement.
+		// Takes the region's shared lock, then the username lock, in one statement (see lockRegistrationSQL).
 		if _, err := tx.ExecContext(ctx, lockRegistrationSQL, input.Region, input.Username); err != nil {
 			return err
 		}

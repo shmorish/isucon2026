@@ -46,9 +46,11 @@ var (
 	lockRegistrationSQL = "SELECT " + usernameLockExpr("$2") + " FROM (SELECT " + regionUsersSharedLockExpr("$1") + " OFFSET 0) AS region_lock"
 )
 
-// lockRegionUsers is taken by opening a posting window; lockRegionUsersShared
-// by anything that changes which users are active in a region, so a window's
-// notifications cover exactly the region's active users when it opens.
+// lockRegionUsers is taken by opening a posting window; the shared lock by
+// anything that changes which users are active in a region (registration via
+// lockRegistrationSQL, deletion and region change via lockAllRegionUsersShared),
+// so a window's notifications cover exactly the region's active users when it
+// opens. lockRegionUsersShared itself is only used by region_lock_test.go.
 func lockRegionUsers(ctx context.Context, tx *sqlx.Tx, region string) error {
 	_, err := tx.ExecContext(ctx, lockRegionUsersSQL, region)
 	return err
