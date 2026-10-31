@@ -21,10 +21,12 @@ CREATE INDEX IF NOT EXISTS notifications_created_at_brin ON notifications USING 
 CREATE INDEX IF NOT EXISTS comments_created_at_brin ON comments USING brin(created_at);
 CREATE INDEX IF NOT EXISTS realmojis_created_at_brin ON realmojis USING brin(created_at);
 CREATE INDEX IF NOT EXISTS posts_created_at_brin ON posts USING brin(created_at);
--- Opening a window inserts one notification per region user; the random-uuid PK and (user_id, posting_window_id) put each row on a cold leaf page.
--- (user_id, created_at) appends at the end of each user's range, which is also what the notification poll reads. Neither constraint can be violated by the one INSERT (new window id, gen_random_uuid id).
-CREATE INDEX IF NOT EXISTS notifications_user_id_created_at ON notifications(user_id, created_at);
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_pkey, DROP CONSTRAINT IF EXISTS notifications_user_id_posting_window_id_key;
+-- Not led by user_id: opening a window would touch one leaf per region user, each a full-page image after a checkpoint (#39).
+-- No foreign keys: the window-open INSERT cannot violate them, and each check locks and dirties a users row.
+CREATE UNIQUE INDEX IF NOT EXISTS notifications_posting_window_id_user_id ON notifications(posting_window_id, user_id);
+DROP INDEX IF EXISTS notifications_user_id_created_at;
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_pkey, DROP CONSTRAINT IF EXISTS notifications_user_id_posting_window_id_key,
+  DROP CONSTRAINT IF EXISTS notifications_user_id_fkey, DROP CONSTRAINT IF EXISTS notifications_posting_window_id_fkey;
 
 SET session_replication_role = replica;
 
