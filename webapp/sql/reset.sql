@@ -56,6 +56,26 @@ BEGIN
     EXECUTE format('TRUNCATE %I', partition_name);
   END LOOP;
 END $$;
+-- ベンチで書く画像の TOAST は1つなので、投稿の INSERT が TOAST の拡張ロック (Lock:extend) を取り合う (#50)。
+-- 上で空にした範囲パーティションを、id のハッシュで 8 つに分けて作り直す (TOAST と拡張ロックも 8 つになる)。
+-- 分けた後は relkind が 'p' になるので、次の initialize からは何もしない。初期データのパーティションには触れない。
+DO $$
+DECLARE part record; k int;
+BEGIN
+  FOR part IN
+    SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bound FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'image_objects'::regclass AND c.relkind = 'r' AND c.relname <> 'image_objects_default'
+      AND c.relname > 'image_objects_' || to_char((SELECT created_at FROM initial_data_boundary) AT TIME ZONE 'UTC', 'YYYYMM')
+  LOOP
+    EXECUTE format('ALTER TABLE image_objects DETACH PARTITION %I', part.relname);
+    EXECUTE format('DROP TABLE %I', part.relname);
+    EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s PARTITION BY HASH (id)', part.relname, part.bound);
+    FOR k IN 0..7 LOOP
+      EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS 8, REMAINDER %s)', part.relname || '_h' || k, part.relname, k);
+    END LOOP;
+    EXECUTE format('ALTER TABLE %I ALTER COLUMN data SET STORAGE EXTERNAL', part.relname);
+  END LOOP;
+END $$;
 DELETE FROM image_objects WHERE created_at > :'boundary';
 DELETE FROM users WHERE created_at > :'boundary';
 
