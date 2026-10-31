@@ -56,3 +56,12 @@ func TestNotificationPollArgsEncodeAsArrays(t *testing.T) {
 		t.Fatalf("encode timestamptz[]: %v", err)
 	}
 }
+
+func TestNotificationHubPollSoonCollapses(t *testing.T) {
+	hub := newNotificationHub(nil, nil)
+	hub.pollSoon()
+	hub.pollSoon() // must not block while a kick is pending
+	if got := len(hub.kick); got != 1 {
+		t.Fatalf("pending kicks = %d, want 1", got)
+	}
+}
