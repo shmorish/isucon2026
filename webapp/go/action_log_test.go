@@ -34,6 +34,9 @@ func TestActionLogInfoKeepsGuardLines(t *testing.T) {
 	e.GET("/api/me", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{})
 	})
+	e.POST("/api/friend-requests", func(c *echo.Context) error {
+		return c.JSON(http.StatusCreated, map[string]string{})
+	})
 
 	requests := []struct {
 		method, target string
@@ -43,6 +46,7 @@ func TestActionLogInfoKeepsGuardLines(t *testing.T) {
 		{http.MethodGet, "/api/images/x?sig=bad"},
 		{http.MethodGet, "/api/images/x"},
 		{http.MethodGet, "/api/me"},
+		{http.MethodPost, "/api/friend-requests"},
 	}
 	for _, r := range requests {
 		req := httptest.NewRequest(r.method, r.target, nil)
