@@ -53,19 +53,22 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 			ORDER BY username, id LIMIT 51`, viewer, input.BeforeUsername, input.BeforeID, "%"+likeEscaper.Replace(query)+"%"); err != nil {
 			return err
 		}
-		items := make([]relationshipUserResponse, 0, len(users))
-		for _, user := range users {
-			if err := user.setImageKey(); err != nil {
+		hasMore := len(users) > 50
+		if hasMore {
+			users = users[:50]
+		}
+		for i := range users {
+			if err := users[i].setImageKey(); err != nil {
 				return err
 			}
-			if user.AccountType != "certified_public" {
-				user.Bio = ""
+			if users[i].AccountType != "certified_public" {
+				users[i].Bio = ""
 			}
-			items = append(items, newRelationshipUserResponse(user))
 		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
+		prefetchImageSignatures(ctx, imagesToSignForUsers(users))
+		items := make([]relationshipUserResponse, 0, len(users))
+		for _, user := range users {
+			items = append(items, newRelationshipUserResponse(user))
 		}
 		return c.JSON(http.StatusOK, searchUsersResponse{Items: items, HasMore: hasMore})
 	}
@@ -106,6 +109,7 @@ func getUserHandler(h *HandlerContext) echo.HandlerFunc {
 		if user.AccountType != "certified_public" && !slices.Contains(friends, user.ID) {
 			user.Bio = ""
 		}
+		prefetchImageSignatures(ctx, appendImagesToSign(nil, user))
 		return c.JSON(http.StatusOK, getUserResponse(newRelationshipUserResponse(user)))
 	}
 }

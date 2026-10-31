@@ -24,13 +24,16 @@ func imageSigningKey(secretKeyHash string) ([]byte, error) {
 }
 
 // 署名は (key, imageID, exp) で決まるのでメモ化する。再起動で消えても計算し直すだけ。
-// ponytail: 上限を超えたら全消去。LRU が必要なら差し替える
-// boundedCache にしないのは、Mutex・clear・上書きの組み合わせを変えるとロック競合と全消去直後のメモリの使い方が変わるため
+// 2世代で持つ: 今の世代が上限に達したら前の世代を捨てて入れ替える。全消去だと、s2・s3 から取り寄せたばかりの署名
+// （#48, #77）や直後の GET /api/images が検証に使う署名まで消えて、手元で計算し直していた。
+// 1件およそ 150 バイトなので 2世代で 60MB 程度
+// ponytail: LRU が必要なら差し替える
 const imageSignatureCacheMax = 200000
 
 var (
-	imageSignatureMu    sync.Mutex
-	imageSignatureCache = map[string][]byte{}
+	imageSignatureMu       sync.Mutex
+	imageSignatureCache    = map[string][]byte{}
+	imageSignatureCacheOld = map[string][]byte{}
 )
 
 func imageSignatureCacheKey(key []byte, imageID string, exp int64) string {
@@ -41,6 +44,9 @@ func cachedImageSignature(cacheKey string) ([]byte, bool) {
 	imageSignatureMu.Lock()
 	defer imageSignatureMu.Unlock()
 	sig, ok := imageSignatureCache[cacheKey]
+	if !ok {
+		sig, ok = imageSignatureCacheOld[cacheKey]
+	}
 	return sig, ok
 }
 
@@ -48,7 +54,8 @@ func storeImageSignature(cacheKey string, sig []byte) {
 	imageSignatureMu.Lock()
 	defer imageSignatureMu.Unlock()
 	if len(imageSignatureCache) >= imageSignatureCacheMax {
-		clear(imageSignatureCache)
+		imageSignatureCacheOld = imageSignatureCache
+		imageSignatureCache = make(map[string][]byte, imageSignatureCacheMax)
 	}
 	imageSignatureCache[cacheKey] = sig
 }

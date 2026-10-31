@@ -75,7 +75,11 @@ func getRelationshipsHandler(h *HandlerContext) echo.HandlerFunc {
   `, actor, input.BeforeUpdatedAt, input.BeforeID); err != nil {
 			return err
 		}
-		items := make([]relationshipResponse, 0, len(records))
+		hasMore := len(records) > 50
+		if hasMore {
+			records = records[:50]
+		}
+		users := make([]User, 0, len(records))
 		for _, record := range records {
 			user := record.User
 			if err := user.setImageKey(); err != nil {
@@ -84,18 +88,19 @@ func getRelationshipsHandler(h *HandlerContext) echo.HandlerFunc {
 			if user.AccountType != "certified_public" && input.Kind != "friends" {
 				user.Bio = ""
 			}
-			status := input.Kind
-			if input.Kind == "incoming-requests" || input.Kind == "outgoing-requests" {
-				status = "pending"
-			}
+			users = append(users, user)
+		}
+		prefetchImageSignatures(ctx, imagesToSignForUsers(users))
+		status := input.Kind
+		if input.Kind == "incoming-requests" || input.Kind == "outgoing-requests" {
+			status = "pending"
+		}
+		items := make([]relationshipResponse, 0, len(records))
+		for i, record := range records {
 			items = append(items, relationshipResponse{
 				RelationID: record.ID, Status: status, UpdatedAt: record.UpdatedAt,
-				User: newRelationshipUserResponse(user),
+				User: newRelationshipUserResponse(users[i]),
 			})
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, getRelationshipsResponse{Items: items, HasMore: hasMore})
 	}

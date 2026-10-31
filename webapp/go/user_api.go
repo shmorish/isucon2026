@@ -178,6 +178,7 @@ func getMeHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
+		prefetchImageSignatures(c.Request().Context(), appendImagesToSign(nil, user))
 		return c.JSON(http.StatusOK, newGetMeResponse(user))
 	}
 }
@@ -234,6 +235,7 @@ func updateMeHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		prefetchImageSignatures(ctx, appendImagesToSign(nil, user))
 		return c.JSON(http.StatusOK, updateMeResponse(newGetMeResponse(user)))
 	}
 }

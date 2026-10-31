@@ -143,6 +143,10 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		postedAt := time.Now().UTC()
 		imageID := uuid.NewString()
+		// 鍵と画像 id はここで決まるので、レスポンスの署名は INSERT・COMMIT と並行して取り寄せる（#77）。
+		// 取り寄せに失敗しても newPostResponse が手元で計算するだけ
+		signed := startPrefetchImageSignatures(ctx, appendImagesToSign(nil, user, imageID))
+		defer signed()
 		args := []any{binaryImage, user.ID, user.Region, imageID, imageData, postedAt, uuid.NewString(), input.Caption, input.Visibility,
 			location.Kind, location.Latitude, location.Longitude, location.Locality}
 		var post Post
@@ -163,6 +167,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		cacheUploadedImage(imageID, imageData)
 		rememberUploadedImageMeta(imageID, user.ID, post.PostedAt)
+		signed()
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))
 	}
 }
@@ -227,6 +232,7 @@ func getMyCurrentPostHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
+		prefetchImageSignatures(ctx, appendImagesToSign(nil, user, post.ImageID))
 		return c.JSON(http.StatusOK, getMyCurrentPostResponse(newPostResponse(post, user)))
 	}
 }
@@ -251,6 +257,7 @@ func getPostHandler(h *HandlerContext) echo.HandlerFunc {
 		if !found || !viewer.canView(post.Post) {
 			return NewAPIError(http.StatusNotFound, "post_not_found")
 		}
+		prefetchImageSignatures(ctx, appendImagesToSign(nil, post.Author, post.ImageID))
 		return c.JSON(http.StatusOK, getPostResponse(newPostResponse(post.Post, post.Author)))
 	}
 }
@@ -319,6 +326,7 @@ func updatePostHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		prefetchImageSignatures(ctx, appendImagesToSign(nil, user, post.ImageID))
 		return c.JSON(http.StatusOK, updatePostResponse(newPostResponse(post, user)))
 	}
 }

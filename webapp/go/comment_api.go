@@ -62,6 +62,9 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		if !found || !viewer.canComment(current.Post) {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
+		// 署名するのは投稿者のプロフィール画像だけ。INSERT・COMMIT と並行して取り寄せる（#77）
+		signed := startPrefetchImageSignatures(ctx, appendImagesToSign(nil, viewer.User))
+		defer signed()
 		var comment Comment
 		if err := tx.GetContext(ctx, &comment, `INSERT INTO comments(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,clock_timestamp()) RETURNING id,post_id,author_id,body,created_at,deleted_at`, uuid.NewString(), post.ID, actor, input.Body); err != nil {
 			return err
@@ -69,6 +72,7 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		signed()
 		return c.JSON(http.StatusCreated, newCommentResponse(comment, viewer.User))
 	}
 }
@@ -112,13 +116,18 @@ func getCommentsHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := listErr; err != nil {
 			return err
 		}
+		hasMore := len(comments) > 50
+		if hasMore {
+			comments = comments[:50]
+		}
+		toSign := make([]imageToSign, 0, len(comments))
+		for _, comment := range comments {
+			toSign = appendImagesToSign(toSign, comment.Author)
+		}
+		prefetchImageSignatures(ctx, toSign)
 		items := make([]createCommentResponse, 0, len(comments))
 		for _, comment := range comments {
 			items = append(items, newCommentResponse(comment.Comment, comment.Author))
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, getCommentsResponse{Items: items, HasMore: hasMore})
 	}

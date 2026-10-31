@@ -106,6 +106,9 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		imageID := uuid.NewString()
 		createdAt := time.Now().UTC()
+		// 鍵と画像 id はここで決まるので、レスポンスの署名は INSERT・COMMIT と並行して取り寄せる（#77）
+		signed := startPrefetchImageSignatures(ctx, appendImagesToSign(nil, viewer.User, imageID))
+		defer signed()
 		// The new realmoji is inserted in a separate statement: in one statement the
 		// replacement UPDATE could run after it and hit realmojis_one_active.
 		if _, err := tx.ExecContext(ctx, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, data, createdAt); err != nil {
@@ -120,6 +123,7 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		cacheUploadedImage(imageID, data)
 		rememberUploadedImageMeta(imageID, actor, reaction.CreatedAt)
+		signed()
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))
 	}
 }
@@ -163,13 +167,18 @@ func getRealMojisHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := listErr; err != nil {
 			return err
 		}
+		hasMore := len(reactions) > 50
+		if hasMore {
+			reactions = reactions[:50]
+		}
+		toSign := make([]imageToSign, 0, 2*len(reactions))
+		for _, reaction := range reactions {
+			toSign = appendImagesToSign(toSign, reaction.Reactor, reaction.ImageID)
+		}
+		prefetchImageSignatures(ctx, toSign)
 		items := make([]replaceRealMojiResponse, 0, len(reactions))
 		for _, reaction := range reactions {
 			items = append(items, newRealMojiResponse(reaction.RealMoji, reaction.Reactor))
-		}
-		hasMore := len(items) > 50
-		if hasMore {
-			items = items[:50]
 		}
 		return c.JSON(http.StatusOK, getRealMojisResponse{Items: items, HasMore: hasMore})
 	}

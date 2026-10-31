@@ -110,24 +110,30 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 				return scores[candidates[i].ID] > scores[candidates[j].ID]
 			})
 		}
-		items := make([]feedItemResponse, 0)
+		chosen := make([]PostWithAuthor, 0, 51)
 		for _, post := range candidates {
-			score := scores[post.ID]
-			if ranked && input.BeforeScore != nil && !rankedBefore(score, post.Post, *input.BeforeScore, *input.BeforePostedAt, input.BeforeID) {
+			if ranked && input.BeforeScore != nil && !rankedBefore(scores[post.ID], post.Post, *input.BeforeScore, *input.BeforePostedAt, input.BeforeID) {
 				continue
 			}
-			item := feedItemResponse{createPostResponse: newPostResponse(post.Post, post.Author)}
-			if ranked {
-				item.Score = &score
-			}
-			items = append(items, item)
-			if len(items) == 51 {
+			chosen = append(chosen, post)
+			if len(chosen) == 51 {
 				break
 			}
 		}
-		hasMore := len(items) > 50
+		hasMore := len(chosen) > 50
 		if hasMore {
-			items = items[:50]
+			chosen = chosen[:50]
+		}
+		// 署名は組み立てる前に1往復でまとめて取り寄せる（#77）
+		prefetchImageSignatures(ctx, imagesToSignForPosts(chosen))
+		items := make([]feedItemResponse, 0, len(chosen))
+		for _, post := range chosen {
+			item := feedItemResponse{createPostResponse: newPostResponse(post.Post, post.Author)}
+			if ranked {
+				score := scores[post.ID]
+				item.Score = &score
+			}
+			items = append(items, item)
 		}
 		return c.JSON(http.StatusOK, getFeedResponse{Items: items, HasMore: hasMore})
 	}

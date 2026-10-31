@@ -38,6 +38,7 @@ func NewServer(config *Config) *echo.Echo {
 	e.IPExtractor = extractClientIP
 
 	e.Use(ActionLogMiddleware(config.LogLevel, os.Stdout))
+	e.Use(InflightMiddleware())
 	e.Use(middleware.Recover())
 	e.HTTPErrorHandler = APIErrorHandler
 
