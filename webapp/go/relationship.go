@@ -26,7 +26,22 @@ func getFriendRequest(ctx context.Context, db sqlx.QueryerContext, id string) (F
 	return request, err
 }
 
+const (
+	lockActiveUserExclusive = `SELECT id FROM users WHERE id=$1 AND status='active' FOR NO KEY UPDATE`
+	lockActiveUserShared    = `SELECT id FROM users WHERE id=$1 AND status='active' FOR SHARE`
+)
+
 func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, error) {
+	return beginUserPairTx(ctx, db, actor, target, lockActiveUserExclusive)
+}
+
+// beginReactionTx locks the target FOR SHARE, which still conflicts with the
+// target's deletion and relationship changes but not with other reactions.
+func beginReactionTx(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, error) {
+	return beginUserPairTx(ctx, db, actor, target, lockActiveUserShared)
+}
+
+func beginUserPairTx(ctx context.Context, db *sqlx.DB, actor, target, targetLock string) (*sqlx.Tx, error) {
 	if actor == target || target == "" {
 		return nil, NewAPIError(http.StatusBadRequest, "invalid_relationship")
 	}
@@ -35,8 +50,12 @@ func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string)
 		return nil, err
 	}
 	for _, id := range []string{min(actor, target), max(actor, target)} {
+		lock := lockActiveUserExclusive
+		if id == target {
+			lock = targetLock
+		}
 		var lockedID string
-		if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 AND status='active' FOR NO KEY UPDATE`, id); err != nil {
+		if err := tx.GetContext(ctx, &lockedID, lock, id); err != nil {
 			tx.Rollback()
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
