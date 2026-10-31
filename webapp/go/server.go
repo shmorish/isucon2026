@@ -2,6 +2,7 @@ package isureal
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"time"
 
@@ -35,6 +36,9 @@ func NewServer(config *Config) *echo.Echo {
 		panic("invalid server region: " + config.Region)
 	}
 	e := echo.New()
+	// 終盤はエラー時のログも捨てる。isureal-guard が読む action log は os.Stdout に直接書くので残る
+	e.Logger = slog.New(slog.DiscardHandler)
+	slog.SetDefault(e.Logger)
 	e.IPExtractor = extractClientIP
 
 	e.Use(ActionLogMiddleware(config.LogLevel, os.Stdout))
