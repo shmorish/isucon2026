@@ -11,6 +11,11 @@ vars:
     sh: cat ~/.server_id 2>/dev/null || true
   NGINX_LOG: /var/log/nginx/access.log
   SLOW_LOG: /var/log/postgresql/postgresql-16-main.log
+  # PostgreSQL を動かしているサーバー (s4) だけ 1 になる
+  PG_ENABLED:
+    sh: systemctl is-enabled postgresql >/dev/null 2>&1 && echo 1 || true
+  # perl 製の psql ラッパーを通すと ssh 元の LC_CTYPE で locale の警告が出るので本体を直接呼ぶ
+  PSQL: sudo -u postgres /usr/lib/postgresql/16/bin/psql -X -q -d postgres
 
 tasks:
   default:
@@ -81,14 +86,27 @@ tasks:
         done
 
   bench-prep:
-    desc: ベンチ前にログを空にする
+    desc: ベンチ前にログと pg_stat_statements を空にする
     cmds:
       - sudo truncate -s 0 {{.NGINX_LOG}} {{.SLOW_LOG}} 2>/dev/null || true
+      - |
+        if [ -n "{{.PG_ENABLED}}" ]; then
+          {{.PSQL}} -c 'SET client_min_messages = warning; CREATE EXTENSION IF NOT EXISTS pg_stat_statements; SELECT pg_stat_statements_reset();' >/dev/null \
+            || echo "pg_stat_statements をリセットできなかった (shared_preload_libraries を確認)"
+        fi
 
   analyze:
-    desc: ベンチ後に alp を集計 (s1〜s3。結果は /tmp/alp.txt)。DB のクエリは s4 で task slp
+    desc: ベンチ後に集計。s1〜s3 は alp (/tmp/alp.txt)、s4 は pg_stat_statements (/tmp/pgstat.txt)。ログからのクエリ集計は s4 で task slp
     cmds:
       - task: alp
+      - task: pgstat
+
+  pgstat:
+    desc: s4 で実行。クエリを合計実行時間順に一覧 (calls、平均 ms、1回あたりの行数、キャッシュヒット率、ディスク読み込み秒)
+    cmds:
+      - |
+        if [ -z "{{.PG_ENABLED}}" ]; then exit 0; fi
+        {{.PSQL}} < scripts/pgstat.sql | tee /tmp/pgstat.txt
 
   alp:
     desc: アクセスログをエンドポイントごとに合計時間順で一覧

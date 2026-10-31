@@ -14,6 +14,7 @@ scripts/reboot-all.sh 手元の Mac で実行。再起動試験 (全台を再起
 scripts/ssh-hosts.sh  手元の Mac で実行。当日のIPを渡すと ~/.ssh/config に s1〜s3 を書く
 scripts/alp-groups.txt  alp で ID を含む URL をまとめる正規表現 (1行1つ)
 scripts/pgslow.py       PostgreSQL のクエリログをクエリ別に集計する (task slp)
+scripts/pgstat.sql      pg_stat_statements の上位クエリ (task pgstat)
 s1/ s2/ s3/           サーバー別の /etc 設定 (etc/) と環境変数ファイル (home/)。task get-conf で取り込み、task deploy で書き戻す
 snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 ```
@@ -29,7 +30,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `./scripts/deploy-all.sh [s1 s2 s3]` | 変更を push した後、毎回（手元から全台に `task deploy`） |
 | `task deploy` | 1台だけサーバー上で反映するとき |
 | `./scripts/reboot-all.sh` | 大きな変更の後と終盤の再起動試験（手元から） |
-| `task analyze` | ベンチの後、毎回 s1〜s3 で（alp を集計）。DB は s4 で `task slp` |
+| `task analyze` | ベンチの後、毎回 s1〜s3 で（alp を集計）。DB は s4 で `task slp` と `task pgstat`（`/tmp/pgstat.txt`） |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
 | `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。3台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
@@ -309,7 +310,7 @@ task alp
 
 ## 終盤（17:00〜18:00）
 
-- `access_log off;`、`slow_query_log = 0`、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止
+- `access_log off;`、s4 の PostgreSQL 計測を止める（`conf.d/zz-isu.conf` を `log_min_duration_statement = -1`、`conf.d/90-measure.conf` を `pg_stat_statements.track = none`・`track_io_timing = off`・`log_lock_waits = off`。ファイルは消さずに値を変える）、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止
 - `snippets/mysql-isu.cnf` の耐久性設定が入っていることを確認
 - `./scripts/reboot-all.sh` で全台再起動 → ベンチが通るか確認 → **ブラウザで画面を確認**
 - 残り30分でコード凍結
