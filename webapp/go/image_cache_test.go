@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -145,6 +146,34 @@ func TestFromLocalNginx(t *testing.T) {
 		if got := fromLocalNginx(r); got != tc.want {
 			t.Errorf("%+v: got %v", tc, got)
 		}
+	}
+}
+
+func TestFromRegionNginx(t *testing.T) {
+	saved := regionNginxAddrs
+	regionNginxAddrs = map[netip.Addr]bool{netip.MustParseAddr("192.168.2.10"): true}
+	defer func() { regionNginxAddrs = saved }()
+	for _, tc := range []struct {
+		remote, marker string
+		want           bool
+	}{
+		{"192.168.2.10:51234", "1", true},
+		{"[::ffff:192.168.2.10]:51234", "1", true},
+		{"192.168.2.10:51234", "", false}, // @s1image refetch clears the marker to get the bytes from s1
+		{"192.168.10.10:51234", "1", false},
+		{"127.0.0.1:51234", "1", false},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/api/images/x", nil)
+		r.RemoteAddr = tc.remote
+		if tc.marker != "" {
+			r.Header.Set("X-Isureal-Image-Accel", tc.marker)
+		}
+		if got := fromRegionNginx(r); got != tc.want {
+			t.Errorf("%+v: got %v", tc, got)
+		}
+	}
+	if _, ok := imageAccelURI("../etc/passwd"); ok {
+		t.Error("non-UUID id was accepted")
 	}
 }
 
