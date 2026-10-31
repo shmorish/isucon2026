@@ -1,9 +1,7 @@
 package isureal
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"net/http"
 
@@ -41,8 +39,7 @@ func adminLoginHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		hash := sha256.Sum256([]byte(input.Password))
-		if administrator.PasswordHash != hex.EncodeToString(hash[:]) {
+		if administrator.PasswordHash != sha256Hex(input.Password) {
 			return NewAPIError(http.StatusUnauthorized, "invalid_credentials")
 		}
 		session, err := CreateAdminSession(h.DB, administrator.ID)

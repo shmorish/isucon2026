@@ -2,9 +2,7 @@ package isureal
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -37,13 +35,12 @@ func getAdminSessionFromHeader(c *echo.Context, db *sqlx.DB) (*AdminSession, err
 		return nil, NewAPIError(http.StatusUnauthorized, "invalid_administrator_session")
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
-	hash := sha256.Sum256([]byte(token))
 	var session AdminSession
 	err := db.GetContext(c.Request().Context(), &session, `
   SELECT administrator_id, token_hash, created_at
   FROM administrator_sessions
   WHERE token_hash = $1 AND active = true
- `, hex.EncodeToString(hash[:]))
+ `, sha256Hex(token))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -77,11 +74,10 @@ func CreateAdminSession(db *sqlx.DB, administratorID string) (*AdminSession, err
 	}
 	defer tx.Rollback()
 	sessionID, token := uuid.NewString(), uuid.NewString()
-	hash := sha256.Sum256([]byte(token))
 	if _, err := tx.ExecContext(ctx, `
   INSERT INTO administrator_sessions (id, administrator_id, token_hash)
   VALUES ($1, $2, $3)
- `, sessionID, administratorID, hex.EncodeToString(hash[:])); err != nil {
+ `, sessionID, administratorID, sha256Hex(token)); err != nil {
 		return nil, fmt.Errorf("failed to insert admin session: %w", err)
 	}
 	session, err := getAdminSession(ctx, tx, sessionID)

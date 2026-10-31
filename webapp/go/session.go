@@ -45,8 +45,12 @@ func sessionTokenHashFromHeader(c *echo.Context) (string, error) {
 
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	tokenHashBytes := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(tokenHashBytes[:]), nil
+	return sha256Hex(token), nil
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func getSessionFromHeader(c *echo.Context, db *sqlx.DB) (*Session, error) {
@@ -195,8 +199,7 @@ func InvalidateLoginSession(db *sqlx.DB, userID string, tokenHash string) error 
 
 func createLoginSessionTx(ctx context.Context, tx *sqlx.Tx, userID string) (*Session, error) {
 	randomToken := uuid.NewString()
-	tokenHashBytes := sha256.Sum256([]byte(randomToken))
-	tokenHash := hex.EncodeToString(tokenHashBytes[:])
+	tokenHash := sha256Hex(randomToken)
 	// users の行は呼び出し側（loginHandler）がロック済み。古いセッションの無効化と新しいセッションの作成を1往復で行う
 	var session Session
 	if err := tx.GetContext(ctx, &session, `
