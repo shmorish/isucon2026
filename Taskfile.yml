@@ -10,7 +10,7 @@ vars:
   SERVER_ID:
     sh: cat ~/.server_id 2>/dev/null || true
   NGINX_LOG: /var/log/nginx/access.log
-  SLOW_LOG: /var/log/mysql/mysql-slow.log
+  SLOW_LOG: /var/log/postgresql/postgresql-16-main.log
 
 tasks:
   default:
@@ -86,11 +86,9 @@ tasks:
       - sudo truncate -s 0 {{.NGINX_LOG}} {{.SLOW_LOG}} 2>/dev/null || true
 
   analyze:
-    desc: ベンチ後に alp / slp / pt-query-digest を集計 (結果は /tmp/alp.txt, slp.txt, slow.txt にも残る)
+    desc: ベンチ後に alp を集計 (s1〜s3。結果は /tmp/alp.txt)。DB のクエリは s4 で task slp
     cmds:
       - task: alp
-      - task: slp
-      - task: slow
 
   alp:
     desc: アクセスログをエンドポイントごとに合計時間順で一覧
@@ -100,13 +98,7 @@ tasks:
   slp:
     desc: スロークエリを合計時間順に一覧 (rows examined が rows sent より極端に多いものはインデックス候補)
     cmds:
-      - sudo slp my --config scripts/slp.yml --file {{.SLOW_LOG}} | tee /tmp/slp.txt
-
-  slow:
-    desc: pt-query-digest の詳細 (EXPLAIN 用のクエリ例やテーブル名も出る)
-    cmds:
-      - sudo pt-query-digest {{.SLOW_LOG}} > /tmp/slow.txt
-      - head -n 120 /tmp/slow.txt
+      - sudo slp pg --config scripts/slp.yml --file {{.SLOW_LOG}} --nosave-pos | tee /tmp/slp.txt
 
   monitor:
     desc: ベンチ開始直前に実行。CPU・メモリを1秒ごとに記録して /tmp/resource.txt に要約 (秒数は D=90 で変更)

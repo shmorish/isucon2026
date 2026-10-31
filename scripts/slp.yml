@@ -3,7 +3,7 @@ sort: sum-query-time
 reverse: true
 format: table
 limit: 30
-output: count,query,sum-query-time,avg-query-time,max-query-time,avg-rows-examined,avg-rows-sent
+output: count,query,sum-query-time,avg-query-time,max-query-time
 bundle_where_in: true
 bundle_values: true
 # 当日: 似たクエリを手でまとめたいときに書く
