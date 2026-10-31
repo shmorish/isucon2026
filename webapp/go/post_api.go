@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"image/jpeg"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -50,6 +49,11 @@ type createPostResponse struct {
 // readCreatePostInput returns the 400s (and image read errors) that come before any DB access.
 func readCreatePostInput(c *echo.Context) (createPostRequest, PostLocation, []byte, error) {
 	var input createPostRequest
+	// 画像はここで1回のバッファに読み、c.Bind は読み終えたフォームを束縛する（upload_read.go）
+	imageData, err := readMultipartUpload(c.Request(), "image")
+	if err != nil {
+		return input, PostLocation{}, nil, echo.ErrBadRequest.Wrap(err)
+	}
 	if err := c.Bind(&input); err != nil {
 		return input, PostLocation{}, nil, err
 	}
@@ -67,15 +71,6 @@ func readCreatePostInput(c *echo.Context) (createPostRequest, PostLocation, []by
 	}
 	if !location.valid() {
 		return input, location, nil, NewAPIError(http.StatusBadRequest, "invalid_post")
-	}
-	imageFile, err := input.Image.Open()
-	if err != nil {
-		return input, location, nil, err
-	}
-	defer imageFile.Close()
-	imageData, err := io.ReadAll(imageFile)
-	if err != nil {
-		return input, location, nil, err
 	}
 	cfg, err := jpeg.DecodeConfig(bytes.NewReader(imageData))
 	if err != nil {

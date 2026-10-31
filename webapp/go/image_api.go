@@ -195,9 +195,13 @@ func init() {
 }
 
 // アップロードを受けたサーバーでは、コミットが成功してから DB に書いたのと同じバイト列を入れる。
-// io.ReadAll の余った容量まで抱えないようにコピーする
+// 読み込みは Content-Length で1回だけ確保するので（upload_read.go）余りは数 KB で、そのまま入れる。
+// 長さが分からず伸ばしながら読んだときだけ、余った容量まで抱えないようにコピーする
 func cacheUploadedImage(id string, data []byte) {
-	putImageData(id, bytes.Clone(data))
+	if cap(data)-len(data) > uploadSlackBytes {
+		data = bytes.Clone(data)
+	}
+	putImageData(id, data)
 }
 
 // 画像本体はディスクにも持つ（#65）。本体は作成後に変わらず id も使い回されないので古くならない。

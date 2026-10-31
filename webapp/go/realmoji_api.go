@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"image/jpeg"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"sync"
@@ -44,35 +43,40 @@ const (
 	createRealMojiQuery = `INSERT INTO realmojis(id,post_id,reactor_id,image_id,reaction_type,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING ` + realMojiColumns
 )
 
+// readReplaceRealMojiInput returns the 400s (and image read errors) that come before any DB access.
+func readReplaceRealMojiInput(c *echo.Context) (replaceRealMojiRequest, []byte, error) {
+	var input replaceRealMojiRequest
+	// 画像はここで1回のバッファに読み、c.Bind は読み終えたフォームを束縛する（upload_read.go）
+	data, err := readMultipartUpload(c.Request(), "image")
+	if err != nil {
+		return input, nil, echo.ErrBadRequest.Wrap(err)
+	}
+	if err := c.Bind(&input); err != nil {
+		return input, nil, err
+	}
+	if input.Image == nil {
+		return input, nil, NewAPIError(http.StatusBadRequest, "invalid_realmoji")
+	}
+	switch input.ReactionType {
+	case "like", "smile", "surprise", "heart", "laugh", "instant":
+	default:
+		return input, nil, NewAPIError(http.StatusBadRequest, "invalid_realmoji")
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return input, nil, NewAPIError(http.StatusBadRequest, "invalid_realmoji")
+	}
+	if cfg.Width > 512 || cfg.Height > 512 {
+		return input, nil, NewAPIError(http.StatusBadRequest, "invalid_realmoji")
+	}
+	return input, data, nil
+}
+
 func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
-		var input replaceRealMojiRequest
-		if err := c.Bind(&input); err != nil {
-			return err
-		}
-		if input.Image == nil {
-			return NewAPIError(http.StatusBadRequest, "invalid_realmoji")
-		}
-		switch input.ReactionType {
-		case "like", "smile", "surprise", "heart", "laugh", "instant":
-		default:
-			return NewAPIError(http.StatusBadRequest, "invalid_realmoji")
-		}
-		file, err := input.Image.Open()
+		input, data, err := readReplaceRealMojiInput(c)
 		if err != nil {
 			return err
-		}
-		defer file.Close()
-		data, err := io.ReadAll(file)
-		if err != nil {
-			return err
-		}
-		cfg, err := jpeg.DecodeConfig(bytes.NewReader(data))
-		if err != nil {
-			return NewAPIError(http.StatusBadRequest, "invalid_realmoji")
-		}
-		if cfg.Width > 512 || cfg.Height > 512 {
-			return NewAPIError(http.StatusBadRequest, "invalid_realmoji")
 		}
 
 		ctx := c.Request().Context()

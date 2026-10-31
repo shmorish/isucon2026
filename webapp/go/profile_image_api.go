@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"image/jpeg"
-	"io"
 	"net/http"
 	"time"
 
@@ -20,7 +19,7 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if c.Request().Header.Get("Content-Type") != "image/jpeg" {
 			return NewAPIError(http.StatusUnsupportedMediaType, "unsupported_media_type")
 		}
-		data, err := io.ReadAll(c.Request().Body)
+		data, err := readBodyExact(c.Request())
 		if err != nil {
 			return err
 		}
