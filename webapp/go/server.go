@@ -69,6 +69,14 @@ func NewServer(config *Config) *echo.Echo {
 	handlerContext.Notifications = newNotificationHub(db, e.Logger)
 	go handlerContext.Notifications.run()
 	go handlerContext.IPBans.run(db, e.Logger)
+	// 画像を返すのは s1 だけ（s2・s3 の nginx は /api/ を s1 に送る）なので、s1 だけが初期画像のメタを読む
+	if config.Region == "asia" {
+		go func() {
+			if err := loadInitialImageMeta(context.Background(), db, e.Logger); err != nil {
+				e.Logger.Error("failed to load initial image metadata", "error", err)
+			}
+		}()
+	}
 	e.Use(IPBanMiddleware(handlerContext))
 
 	e.POST("/api/initialize", initializeHandler(handlerContext))

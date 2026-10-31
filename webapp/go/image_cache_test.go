@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestBoundedCacheKeepsFirstValue(t *testing.T) {
@@ -165,5 +167,23 @@ func TestUploadedImageReadsFromDiskWhenDBDataIsEmpty(t *testing.T) {
 	}
 	if _, err := imageDataFromDB("0123abcd-0000-4000-8000-000000000000", fileBackedImageData); err == nil {
 		t.Fatal("empty data without a file must be an error, not an empty image")
+	}
+}
+
+// 初期画像のメタは [16]byte とマイクロ秒で持つので、引いた値が DB の値（マイクロ秒の timestamptz）と一致すること
+func TestLookupInitialImageMetaRoundTrip(t *testing.T) {
+	saved := initialImageMeta.Load()
+	defer initialImageMeta.Store(saved)
+	id := "c74e7f85-dfbd-48aa-bf2f-601bdc05f29f"
+	createdAt := time.Date(2024, 10, 29, 16, 49, 20, 259487000, time.UTC)
+	table := &initialImageMetaTable{byID: map[[16]byte]initialImageMetaEntry{}, owners: []string{"owner-a"}, types: []string{"image/jpeg"}}
+	table.byID[uuid.MustParse(id)] = initialImageMetaEntry{createdAt: createdAt.UnixMicro(), owner: 0, mediaType: 0}
+	initialImageMeta.Store(table)
+	got, ok := lookupInitialImageMeta(id)
+	if !ok || got.Owner != "owner-a" || got.MediaType != "image/jpeg" || !got.CreatedAt.Equal(createdAt) {
+		t.Fatalf("got %+v, %v", got, ok)
+	}
+	if _, ok := lookupInitialImageMeta("not-a-uuid"); ok {
+		t.Fatal("a non-UUID id must miss")
 	}
 }

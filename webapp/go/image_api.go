@@ -67,6 +67,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		// 見せられないときは今までどおり image_objects を引く。消えた画像（差し替え前のプロフィール画像）と
 		// 削除された投稿の画像で、署名を確認する前に 403 にするか（abuse の記録の有無）が変わらないようにするため
 		known, hit := imageMetaCache.get(input.ImageID)
+		if !hit {
+			known, hit = lookupInitialImageMeta(input.ImageID)
+		}
 		checked := false
 		// 「見せてよい」と覚えている画像は DB を引かない（#89）。署名の確認は下で必ず行う。
 		// それ以外（覚えていない・本体が手元にない）は今までの経路に落とす
