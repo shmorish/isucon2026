@@ -37,6 +37,7 @@ func NewServer(config *Config) *echo.Echo {
 	db := sqlx.NewDb(stdlib.OpenDB(*pgxConfig, stdlib.OptionShouldPing(shouldPingIdleConn)), "pgx")
 	db.SetMaxOpenConns(30)
 	db.SetMaxIdleConns(30)
+	publishDBStats(db)
 	// 全台再起動で DB (s4) より先に起動しても落ちないよう、最大60秒待つ
 	for i := 0; i < 60; i++ {
 		if err = db.Ping(); err == nil {
