@@ -32,22 +32,30 @@ func GetSession(c *echo.Context) *Session {
 	return sess
 }
 
-func getSessionFromHeader(c *echo.Context, db *sqlx.DB) (*Session, error) {
+// sessionTokenHashFromHeader returns "" when there is no Authorization header.
+func sessionTokenHashFromHeader(c *echo.Context) (string, error) {
 	authHeader := c.Request().Header.Get(echo.HeaderAuthorization)
 	if authHeader == "" {
-		return nil, nil
+		return "", nil
 	}
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		c.Logger().Warn("Invalid authorization header format(not started with Bearer)")
-		return nil, NewAPIError(http.StatusUnauthorized, "invalid_session")
+		return "", NewAPIError(http.StatusUnauthorized, "invalid_session")
 	}
 
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
 	tokenHashBytes := sha256.Sum256([]byte(token))
-	tokenHash := hex.EncodeToString(tokenHashBytes[:])
+	return hex.EncodeToString(tokenHashBytes[:]), nil
+}
+
+func getSessionFromHeader(c *echo.Context, db *sqlx.DB) (*Session, error) {
+	tokenHash, err := sessionTokenHashFromHeader(c)
+	if tokenHash == "" {
+		return nil, err
+	}
 	var session Session
-	err := db.GetContext(c.Request().Context(), &session, `
+	err = db.GetContext(c.Request().Context(), &session, `
 		SELECT s.user_id, s.token_hash, s.created_at, u.region
 		FROM login_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1
@@ -76,6 +84,74 @@ func SessionMiddleware(handlerContext *HandlerContext, authRequired bool) echo.M
 			return next(c)
 		}
 	}
+}
+
+// FoldedSessionMiddleware is SessionMiddleware(h, true) + RegionMiddleware(h) for handlers that look the session up
+// in their first query (sessionCTE + sessionSelect, token hash as $1) and then call acceptFoldedSession.
+func FoldedSessionMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			tokenHash, err := sessionTokenHashFromHeader(c)
+			if err != nil {
+				return err
+			}
+			if tokenHash == "" {
+				return NewAPIError(http.StatusUnauthorized, "invalid_session")
+			}
+			c.Set("session_token_hash", tokenHash)
+			return next(c)
+		}
+	}
+}
+
+func foldedSessionTokenHash(c *echo.Context) string {
+	tokenHash, _ := c.Get("session_token_hash").(string)
+	return tokenHash
+}
+
+// LIMIT 1: the separate lookup took the first matching row the same way.
+const sessionCTE = `sess AS (
+		SELECT s.user_id, s.token_hash, s.created_at, u.region
+		FROM login_sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1
+		  AND s.active = true AND u.status = 'active'
+		LIMIT 1
+	)`
+
+const sessionSelect = `sess.user_id AS sess_user_id, sess.token_hash AS sess_token_hash, sess.created_at AS sess_created_at, sess.region AS sess_region`
+
+type sessionColumns struct {
+	SessUserID    string    `db:"sess_user_id"`
+	SessTokenHash string    `db:"sess_token_hash"`
+	SessCreatedAt time.Time `db:"sess_created_at"`
+	SessRegion    string    `db:"sess_region"`
+}
+
+// acceptFoldedSession gives the responses SessionMiddleware and RegionMiddleware gave. found is false when the
+// folded query returned no row (no valid session).
+func acceptFoldedSession(c *echo.Context, h *HandlerContext, found bool, cols sessionColumns) error {
+	if !found {
+		return NewAPIError(http.StatusUnauthorized, "invalid_session")
+	}
+	c.Set("session", &Session{UserID: cols.SessUserID, TokenHash: cols.SessTokenHash, CreatedAt: cols.SessCreatedAt, Region: cols.SessRegion})
+	if cols.SessRegion != h.Config.Region {
+		return NewAPIError(http.StatusForbidden, "region_mismatch")
+	}
+	return nil
+}
+
+// requireFoldedSession runs the standalone session lookup, for handlers that return (e.g. a 400) before their
+// folded query: 401/403 must still win over those errors.
+func requireFoldedSession(c *echo.Context, h *HandlerContext) error {
+	var cols sessionColumns
+	err := h.DB.GetContext(c.Request().Context(), &cols, `WITH `+sessionCTE+` SELECT `+sessionSelect+` FROM sess`, foldedSessionTokenHash(c))
+	if errors.Is(err, sql.ErrNoRows) {
+		return acceptFoldedSession(c, h, false, cols)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+	return acceptFoldedSession(c, h, true, cols)
 }
 
 func InvalidateLoginSession(db *sqlx.DB, userID string, tokenHash string) error {
