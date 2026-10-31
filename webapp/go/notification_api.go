@@ -20,10 +20,9 @@ func getNotificationsHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		ctx := c.Request().Context()
 		session := GetSession(c)
-		var connectedAt time.Time
-		if err := h.DB.GetContext(ctx, &connectedAt, `SELECT clock_timestamp()`); err != nil {
-			return err
-		}
+		// 投稿期間の starts_at は s4 の clock_timestamp()。s1 と s4 は chrony で数µs以内に揃っているので、ヘッダを返す前に
+		// DB を1往復しない（最終日にプールが埋まるとヘッダが返せず、ルーターが 503 を返していた）
+		connectedAt := time.Now()
 		response := c.Response()
 		response.Header().Set("Content-Type", "text/event-stream")
 		response.WriteHeader(http.StatusOK)

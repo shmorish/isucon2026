@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"sync"
@@ -47,13 +48,19 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		prefetched.Go(func() { prefetchImageSignatures(ctx, toSign) })
 		defer prefetched.Wait()
 
-		// 画像本体はキャッシュにないものだけ DB から取る
+		// 画像本体は、メモリにあればそれを、ディスクにあればファイルから zip に直接流し、どちらにもないものだけ DB から取る。
+		// ディスクの分をメモリのキャッシュに入れない: 1回で数百枚入れると、上限で全部捨てるキャッシュからフィードや
+		// 画像配信の分まで追い出していた
 		images := make(map[string][]byte, len(posts))
+		onDisk := make(map[string]bool, len(posts))
 		requested := make(map[string]struct{}, len(posts))
 		var missing []Post
 		for _, post := range posts {
-			if data, ok := getImageData(post.ImageID); ok {
+			if data, ok := imageDataCache.get(post.ImageID); ok {
 				images[post.ImageID] = data
+			} else if f, _, ok := openCompleteImageFile(post.ImageID); ok {
+				f.Close()
+				onDisk[post.ImageID] = true
 			} else if _, ok := requested[post.ImageID]; !ok {
 				requested[post.ImageID] = struct{}{}
 				missing = append(missing, post)
@@ -83,6 +90,12 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 
 		prefetched.Wait()
+		// 取り寄せた署名が使えるうちに、全件のレスポンスを先に作る。zip を書きながら作ると、遅いエクスポート（平均1.35秒、
+		// 最大8秒）では取り寄せた範囲を過ぎて、1件ごとに HMAC 1000回を手元で計算していた（s1 の CPU の約8%）
+		responses := make([]createPostResponse, len(posts))
+		for i, post := range posts {
+			responses[i] = newPostResponse(post, author)
+		}
 
 		c.Response().Header().Set(echo.HeaderContentType, "application/zip")
 		c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="isureal-posts.zip"`)
@@ -91,15 +104,16 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		writer := zip.NewWriter(c.Response())
 		defer writer.Close()
 		items := make([]exportPostResponse, 0, len(posts))
-		for _, post := range posts {
+		for i, post := range posts {
 			data, ok := images[post.ImageID]
-			for !ok && next < len(fetches.chunks) {
+			fromDisk := !ok && onDisk[post.ImageID]
+			for !ok && !fromDisk && next < len(fetches.chunks) {
 				if err := advance(); err != nil {
 					return err
 				}
 				data, ok = images[post.ImageID]
 			}
-			if !ok {
+			if !ok && !fromDisk {
 				// 元の JOIN image_objects と同じく、画像のない投稿は含めない
 				continue
 			}
@@ -108,10 +122,15 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 			if err != nil {
 				return err
 			}
-			if _, err := image.Write(data); err != nil {
+			if fromDisk {
+				err = copyImageFile(image, post.ImageID)
+			} else {
+				_, err = image.Write(data)
+			}
+			if err != nil {
 				return err
 			}
-			items = append(items, exportPostResponse{createPostResponse: newPostResponse(post, author), ImagePath: imagePath})
+			items = append(items, exportPostResponse{createPostResponse: responses[i], ImagePath: imagePath})
 		}
 		manifest, err := writer.Create("posts.json")
 		if err != nil {
@@ -200,4 +219,15 @@ func fetchExportImages(ctx context.Context, db *sqlx.DB, posts []Post) (map[stri
 		}
 	}
 	return images, nil
+}
+
+// copyImageFile は openCompleteImageFile で確かめた画像ファイルを w に流す。ファイルは消さないので、確かめた後もある
+func copyImageFile(w io.Writer, id string) error {
+	f, _, ok := openCompleteImageFile(id)
+	if !ok {
+		return fmt.Errorf("image file disappeared: %s", id)
+	}
+	defer f.Close()
+	_, err := io.Copy(w, f)
+	return err
 }
