@@ -141,8 +141,7 @@ func deleteCommentHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		var lockedID string
-		if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE`, actor); err != nil {
+		if err := lockUserRow(ctx, tx, actor); err != nil {
 			return err
 		}
 		var record struct {

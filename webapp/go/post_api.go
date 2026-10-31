@@ -317,8 +317,7 @@ func deletePostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
-		var lockedUserID string
-		if err := tx.GetContext(ctx, &lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		var target struct {

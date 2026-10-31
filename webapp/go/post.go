@@ -298,10 +298,29 @@ func getFriendIDs(ctx context.Context, db sqlx.QueryerContext, userID string) ([
 	return ids, nil
 }
 
+// Every place that row-locks users. Changing a mode or the order here changes
+// what these exclude each other from; check all of them together.
+//   - lockUser, lockUserRow: own row, FOR NO KEY UPDATE
+//   - account deletion (account_deletion_api.go): own row, FOR NO KEY UPDATE, status='active'
+//   - profile image set/delete (profile_image_api.go): own row, FOR NO KEY UPDATE, reads profile_image_id
+//   - login (user_api.go): row by username, FOR NO KEY UPDATE
+//   - logout (session.go): own row, FOR NO KEY UPDATE inside a CTE
+//   - lockUserPair (relationship.go): actor FOR NO KEY UPDATE, target FOR SHARE, status='active', smaller id first
+//   - comment create (comment_api.go): both rows FOR SHARE, smaller id first, no status condition
+//
+// They differ in columns read, conditions and errors, so they are not merged.
 func lockUser(ctx context.Context, tx *sqlx.Tx, userID string) (User, error) {
 	var user User
 	err := tx.GetContext(ctx, &user, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID)
 	return user, err
+}
+
+const lockUserRowSQL = `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`
+
+// lockUserRow is lockUser without reading the row; a missing row is sql.ErrNoRows.
+func lockUserRow(ctx context.Context, tx *sqlx.Tx, userID string) error {
+	var lockedID string
+	return tx.GetContext(ctx, &lockedID, lockUserRowSQL, userID)
 }
 
 // requireActive is not folded into lockUser's WHERE so handlers that read the user late keep their error precedence.
