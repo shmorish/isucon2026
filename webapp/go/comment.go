@@ -47,22 +47,12 @@ func selectCommentsWithAuthor(ctx context.Context, db sqlx.QueryerContext, condi
 	return comments, nil
 }
 
-func canComment(ctx context.Context, db sqlx.QueryerContext, viewerID, postID string) (bool, error) {
-	post, err, viewer, viewerErr := loadPostAndViewer(ctx, db, viewerID, postID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+func canComment(ctx context.Context, db *sqlx.DB, viewerID, postID string) (bool, error) {
+	post, viewer, found, err := loadPostAndViewer(ctx, db, viewerID, postID)
 	if err != nil {
 		return false, err
 	}
-	err = viewerErr
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return viewer.canComment(post.Post), nil
+	return found && viewer.canComment(post.Post), nil
 }
 
 func (viewer viewerContext) canComment(post Post) bool {
@@ -98,10 +88,9 @@ func beginTxWithPost(ctx context.Context, db *sqlx.DB, postID string) (*sqlx.Tx,
 	return tx, post, txErr
 }
 
-// loadPostAndViewerTx returns what loadPostAndViewer returns inside a
-// transaction, but in one statement instead of two. found is false when
-// either the post or the viewer is missing, where canViewPost and canComment
-// both answer false.
+// loadPostAndViewerTx returns what loadPostAndViewer returns, but inside a
+// transaction and in one statement instead of two. found is false when
+// either the post or the viewer is missing.
 func loadPostAndViewerTx(ctx context.Context, tx *sqlx.Tx, viewerID, postID string) (post PostWithAuthor, viewer viewerContext, found bool, err error) {
 	var row struct {
 		PostWithAuthor
@@ -130,17 +119,9 @@ func loadPostAndViewerTx(ctx context.Context, tx *sqlx.Tx, viewerID, postID stri
 	if err := post.Author.setImageKey(); err != nil {
 		return post, viewer, false, err
 	}
-	viewer = viewerContext{User: row.Viewer, HasPostedToday: row.HasPostedToday, Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}
-	if err := viewer.User.setImageKey(); err != nil {
+	viewer, err = newViewerContext(viewerContextRow{User: row.Viewer, HasPostedToday: row.HasPostedToday, BlockedIDs: row.BlockedIDs, FriendIDs: row.FriendIDs, FriendFriendships: row.FriendFriendships})
+	if err != nil {
 		return post, viewer, false, err
 	}
-	viewer.Blocked = make(map[string]bool, len(row.BlockedIDs))
-	for _, id := range row.BlockedIDs {
-		viewer.Blocked[id] = true
-	}
-	for _, id := range row.FriendIDs {
-		viewer.Friends[id] = true
-	}
-	viewer.addFriendFriendships(row.FriendFriendships)
 	return post, viewer, true, nil
 }
