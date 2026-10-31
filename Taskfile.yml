@@ -98,11 +98,16 @@ tasks:
   bench-prep:
     desc: ベンチ前にログと pg_stat_statements を空にする
     cmds:
-      - sudo truncate -s 0 {{.NGINX_LOG}} {{.SLOW_LOG}} 2>/dev/null || true
+      - |
+        set -e
+        for f in {{.NGINX_LOG}} {{.SLOW_LOG}}; do
+          # -c (O_CREAT なし) が必須: fs.protected_regular=2 だと sticky な /var/log/postgresql にある postgres 所有のログを root でも O_CREAT で開けない
+          if sudo test -f "$f"; then sudo truncate -c -s 0 "$f"; fi
+        done
+      # 拡張は postgres DB に作る (task pgstat もここを見る。ビューはクラスタ全体の統計を返し、reset.sql は isureal しか触らない)
       - |
         if [ -n "{{.PG_ENABLED}}" ]; then
-          {{.PSQL}} -c 'SET client_min_messages = warning; CREATE EXTENSION IF NOT EXISTS pg_stat_statements; SELECT pg_stat_statements_reset();' >/dev/null \
-            || echo "pg_stat_statements をリセットできなかった (shared_preload_libraries を確認)"
+          {{.PSQL}} -v ON_ERROR_STOP=1 -c 'SET client_min_messages = warning' -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements' -c 'SELECT pg_stat_statements_reset()' >/dev/null
         fi
 
   analyze:
@@ -116,7 +121,8 @@ tasks:
     cmds:
       - |
         if [ -z "{{.PG_ENABLED}}" ]; then exit 0; fi
-        {{.PSQL}} < scripts/pgstat.sql | tee /tmp/pgstat.txt
+        set -o pipefail
+        {{.PSQL}} -v ON_ERROR_STOP=1 < scripts/pgstat.sql | tee /tmp/pgstat.txt
 
   alp:
     desc: アクセスログをエンドポイントごとに合計時間順で一覧
