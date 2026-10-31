@@ -23,9 +23,11 @@ type HandlerContext struct {
 // INSERT する投稿が同時に約 70 本走って WAL と BufferContent の待ちが増え、投稿の INSERT が 29ms → 252ms、通知の INSERT が
 // 13〜17 倍、投稿期間を開く API が 1.4〜4.1 秒になって、asia の人数が 766 → 349 に落ちた。s1 のプール待ちは s1 の CPU 詰まりの
 // 結果で、本数を増やしても DB が処理できる量は増えない。s2・s3 は画像のキャッシュミスだけで同時 1 本しか使わないので 10
+// その後、画像を DB の外に出し (#81)、通知の INSERT もやめた (#82) ので、WAL の待ちの元が消えた。60 のときは s1 の
+// プール待ちが 181,092 回・平均 0.2 秒あり、s4 の CPU は平均 34%、s1 の CPU も 2 コアの約 3 割だったので 120 にする
 func dbPoolSize(region string) int {
 	if region == "asia" {
-		return 60
+		return 120
 	}
 	return 10
 }
