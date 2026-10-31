@@ -165,6 +165,19 @@ func prefetchImageSignatures(ctx context.Context, images []imageToSign) {
 		return
 	}
 	reqs, missing := missingImageSignatureRequests(images, time.Now().Add(imageURLLifetime).Unix())
+	if imageSignRemoteOnly {
+		// 1枚でも頼む（s1 では計算しない）。失敗した塊は別の署名先に頼み直す
+		if len(reqs) == 0 {
+			return
+		}
+		sigs := signImagesRemotely(ctx, reqs)
+		for j, r := range reqs {
+			if sigs[j] != nil {
+				storeImageSignature(imageSignatureCacheKey(r.Key, r.ImageID, r.Exp), sigs[j])
+			}
+		}
+		return
+	}
 	minimum := imageSignaturePrefetchMin
 	if imageSigningBusy() {
 		minimum = imageSignaturePrefetchMinBusy
@@ -199,6 +212,68 @@ func prefetchImageSignatures(ctx context.Context, images []imageToSign) {
 		})
 	}
 	wg.Wait()
+}
+
+// signImagesRemotely は reqs を使える署名先に分けて頼み、失敗した塊は別の署名先に1回だけ頼み直す。
+// 戻り値は reqs と同じ並びで、取れなかったものは nil
+func signImagesRemotely(ctx context.Context, reqs []imageSignatureRequest) [][]byte {
+	out := make([][]byte, len(reqs))
+	signers := availableImageSigners()
+	if len(signers) == 0 {
+		// 全部休ませているときも、手元で計算する前に一応頼んでみる
+		signers = imageSigners
+	}
+	if len(signers) == 0 || len(reqs) == 0 {
+		return out
+	}
+	type chunk struct {
+		from, to int
+		signer   int
+	}
+	try := func(chunks []chunk) []chunk {
+		ctx, cancel := context.WithTimeout(ctx, imageSignerTimeout)
+		defer cancel()
+		failed := make([]bool, len(chunks))
+		var wg sync.WaitGroup
+		for i, ch := range chunks {
+			wg.Go(func() {
+				signer := signers[ch.signer]
+				sigs, err := requestImageSignatures(ctx, signer, reqs[ch.from:ch.to])
+				if err != nil {
+					if !imageSignerTimedOut(ctx, err) {
+						markImageSignerDown(signer)
+					}
+					slog.Warn("remote image signing failed", "signer", signer, "error", err)
+					failed[i] = true
+					return
+				}
+				copy(out[ch.from:ch.to], sigs)
+			})
+		}
+		wg.Wait()
+		var rest []chunk
+		for i, ch := range chunks {
+			if failed[i] {
+				rest = append(rest, ch)
+			}
+		}
+		return rest
+	}
+	var chunks []chunk
+	for i := range signers {
+		from, to := i*len(reqs)/len(signers), (i+1)*len(reqs)/len(signers)
+		if from < to {
+			chunks = append(chunks, chunk{from, to, i})
+		}
+	}
+	failed := try(chunks)
+	if len(failed) > 0 && len(signers) > 1 {
+		for i := range failed {
+			failed[i].signer = (failed[i].signer + 1) % len(signers)
+		}
+		try(failed)
+	}
+	return out
 }
 
 // startPrefetchImageSignatures は取り寄せを裏で始め、待つ関数を返す。DB の INSERT・COMMIT と並行して
