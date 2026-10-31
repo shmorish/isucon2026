@@ -144,31 +144,7 @@ func newImageMetaQuery(cols string) imageMetaQuery {
 // id は UUID で再利用されず created_at も変わらないので、初期化で消えた画像の値が残っても該当行なしになるだけ。
 const imageCreatedAtCacheMaxEntries = 1 << 20
 
-var imageCreatedAtCache = &timeCache{m: map[string]time.Time{}}
-
-type timeCache struct {
-	mu sync.RWMutex
-	m  map[string]time.Time
-}
-
-func (c *timeCache) get(k string) (time.Time, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	v, ok := c.m[k]
-	return v, ok
-}
-
-func (c *timeCache) put(k string, v time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, ok := c.m[k]; ok {
-		return
-	}
-	if len(c.m) >= imageCreatedAtCacheMaxEntries {
-		c.m = map[string]time.Time{}
-	}
-	c.m[k] = v
-}
+var imageCreatedAtCache = newBoundedCache(imageCreatedAtCacheMaxEntries, func(time.Time) int { return 1 })
 
 // ponytail: 上限を超えたら全消去する。ヒット率が落ちるようなら LRU にする
 // Go のヒープは画像の長さの約1.08倍（実際の投稿・RealMoji のサイズ分布で計測）。
@@ -190,31 +166,39 @@ func cacheUploadedImage(id string, data []byte) {
 	imageDataCache.put(id, bytes.Clone(data))
 }
 
-var imageDataCache = &bytesCache{m: map[string][]byte{}}
+var imageDataCache = newBoundedCache(imageDataCacheMaxBytes, func(v []byte) int { return len(v) })
 
-type bytesCache struct {
-	mu   sync.RWMutex
-	m    map[string][]byte
-	size int
+// 既にあるキーは上書きしない。sizeOf の合計が max を超えるときは新しいマップに替えて全部捨てる
+type boundedCache[V any] struct {
+	mu     sync.RWMutex
+	m      map[string]V
+	size   int
+	max    int
+	sizeOf func(V) int
 }
 
-func (c *bytesCache) get(k string) ([]byte, bool) {
+func newBoundedCache[V any](max int, sizeOf func(V) int) *boundedCache[V] {
+	return &boundedCache[V]{m: map[string]V{}, max: max, sizeOf: sizeOf}
+}
+
+func (c *boundedCache[V]) get(k string) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	v, ok := c.m[k]
 	return v, ok
 }
 
-func (c *bytesCache) put(k string, v []byte) {
+func (c *boundedCache[V]) put(k string, v V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.m[k]; ok {
 		return
 	}
-	if c.size+len(v) > imageDataCacheMaxBytes {
-		c.m = map[string][]byte{}
+	n := c.sizeOf(v)
+	if c.size+n > c.max {
+		c.m = map[string]V{}
 		c.size = 0
 	}
 	c.m[k] = v
-	c.size += len(v)
+	c.size += n
 }

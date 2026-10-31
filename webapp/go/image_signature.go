@@ -25,6 +25,7 @@ func imageSigningKey(secretKeyHash string) ([]byte, error) {
 
 // 署名は (key, imageID, exp) で決まるのでメモ化する。再起動で消えても計算し直すだけ。
 // ponytail: 上限を超えたら全消去。LRU が必要なら差し替える
+// boundedCache にしないのは、Mutex・clear・上書きの組み合わせを変えるとロック競合と全消去直後のメモリの使い方が変わるため
 const imageSignatureCacheMax = 200000
 
 var (
