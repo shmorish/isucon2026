@@ -127,6 +127,21 @@ tasks:
         fi
         {{.PSQL}} -At -c "SELECT 'pending_restart (反映には再起動が必要): ' || name FROM pg_settings WHERE pending_restart"
 
+  clean-uploads:
+    desc: 's1 で /api/initialize の前に実行。前回のベンチでアップロードされた画像（初期データより後に作られた image_objects の行）のファイルを image-cache から消す。初期データの画像は残る'
+    cmds:
+      - |
+        set -e
+        dir=$HOME/image-cache
+        set -a; . $HOME/env.sh; set +a
+        ids=$(mktemp)
+        PGPASSWORD="$ISUREAL_DB_PASSWORD" psql -XAt -h "$ISUREAL_DB_HOST" -p "$ISUREAL_DB_PORT" -U "$ISUREAL_DB_USER" -d "$ISUREAL_DB_NAME" \
+          -c 'SELECT id FROM image_objects WHERE created_at > (SELECT created_at FROM initial_data_boundary)' > "$ids"
+        n=$(grep -cE '^[0-9a-f-]{36}$' "$ids" || true)
+        grep -E '^[0-9a-f-]{36}$' "$ids" | awk -v d="$dir" '{print d "/" substr($0,1,2) "/" $0}' | xargs -r rm -f
+        rm -f "$ids"
+        echo "clean-uploads: ${n} 件を削除"; df -h / | tail -1
+
   bench-prep:
     desc: ベンチ前にログと pg_stat_statements を空にする
     cmds:
