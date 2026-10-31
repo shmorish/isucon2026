@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -40,15 +42,26 @@ const (
 var imageSignBusyInflight = envInt("ISUREAL_IMAGE_SIGN_BUSY_INFLIGHT", 16)
 
 // 署名の取り寄せ 1 回に待つ上限。往復は 100ms（新しい接続で 200ms）、s2 側の計算は 300 枚でも 25ms。
-// これを超えたら手元で計算する。s2・s3 が落ちているときに毎回待たないよう、失敗した署名先はしばらく使わない
-const (
-	imageSignerTimeout  = 500 * time.Millisecond
-	imageSignerCooldown = 2 * time.Second
-)
+// これを超えたら手元で計算する。s2・s3 が落ちているときに毎回待たないよう、失敗した署名先はしばらく使わない。
+// 500ms だと s1 が混んだときに s1 側のスケジューリング待ちだけで超え（s2・s3 の応答は平均 5〜14ms）、
+// 手元の計算で s1 がさらに混む悪循環になっていたので 1.5s にし、時間切れでは署名先を休ませない
+var imageSignerTimeout = time.Duration(envInt("ISUREAL_IMAGE_SIGN_TIMEOUT_MS", 1500)) * time.Millisecond
+
+const imageSignerCooldown = 2 * time.Second
 
 var imageSignerClient = &http.Client{
-	Timeout:   time.Second,
+	Timeout:   imageSignerTimeout + 500*time.Millisecond,
 	Transport: &http.Transport{MaxIdleConnsPerHost: 64},
+}
+
+// imageSignerTimedOut は失敗が時間切れ（または呼び出し元の取り消し）によるものか。時間切れは s1 が混んでいる
+// せいなので署名先を休ませない。つながらない・200 以外のときだけ休ませる
+func imageSignerTimedOut(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func envInt(key string, defaultValue int) int {
@@ -174,7 +187,9 @@ func prefetchImageSignatures(ctx context.Context, images []imageToSign) {
 		wg.Go(func() {
 			sigs, err := requestImageSignatures(ctx, signer, chunk)
 			if err != nil {
-				markImageSignerDown(signer)
+				if !imageSignerTimedOut(ctx, err) {
+					markImageSignerDown(signer)
+				}
 				slog.Warn("remote image signing failed", "signer", signer, "error", err)
 				return
 			}

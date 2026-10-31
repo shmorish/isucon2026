@@ -109,12 +109,16 @@ func TestPrefetchSmallBatchOnlyWhenBusy(t *testing.T) {
 }
 
 func TestPrefetchFallsBackWhenSignerFails(t *testing.T) {
+	defer func(d time.Duration) { imageSignerTimeout = d }(imageSignerTimeout)
+	imageSignerTimeout = 300 * time.Millisecond
 	failing, failCalls := fakeSigner(t, func(c *echo.Context) error { return c.NoContent(http.StatusInternalServerError) })
-	hanging, _ := fakeSigner(t, func(c *echo.Context) error {
+	refused := httptest.NewServer(http.NotFoundHandler())
+	refused.Close()
+	hanging, hangCalls := fakeSigner(t, func(c *echo.Context) error {
 		time.Sleep(imageSignerTimeout + 200*time.Millisecond)
 		return c.NoContent(http.StatusOK)
 	})
-	useSigners(t, failing.URL, hanging.URL)
+	useSigners(t, failing.URL, refused.URL, hanging.URL)
 
 	key := bytes.Repeat([]byte{9}, 32)
 	start := time.Now()
@@ -127,16 +131,19 @@ func TestPrefetchFallsBackWhenSignerFails(t *testing.T) {
 	if !bytes.Equal(imageSignature(key, "img-0", exp), computeImageSignature(key, "img-0", exp)) {
 		t.Fatal("local fallback produced a different signature")
 	}
-	// 失敗した署名先はしばらく使わない
-	if len(availableImageSigners()) != 0 {
-		t.Fatalf("failed signers must be skipped, got %v", availableImageSigners())
+	// 200 以外・つながらない署名先はしばらく使わないが、時間切れの署名先は休ませない（s1 が混んでいるだけ）
+	if got := availableImageSigners(); len(got) != 1 || got[0] != hanging.URL {
+		t.Fatalf("only the timed-out signer must stay available, got %v", got)
 	}
 	prefetchImageSignatures(context.Background(), testImagesToSign(key, 16))
 	if failCalls.Load() != 1 {
 		t.Fatalf("a signer in cooldown was called again (%d calls)", failCalls.Load())
 	}
+	if hangCalls.Load() != 2 {
+		t.Fatalf("a timed-out signer must be tried again (%d calls)", hangCalls.Load())
+	}
 	imageSignerDownUntil.Store(failing.URL, time.Now().Add(-time.Second).UnixNano())
-	if got := availableImageSigners(); len(got) != 1 || got[0] != failing.URL {
+	if got := availableImageSigners(); len(got) != 2 || got[0] != failing.URL {
 		t.Fatalf("signer must come back after the cooldown, got %v", got)
 	}
 }
