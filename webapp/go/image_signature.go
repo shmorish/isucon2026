@@ -14,7 +14,6 @@ import (
 
 const imageURLLifetime = 24 * time.Hour
 const imageSignatureIterations = 1000
-const imageExpStep = 10 * time.Minute
 
 func imageSigningKey(secretKeyHash string) ([]byte, error) {
 	key, err := hex.DecodeString(secretKeyHash)
@@ -62,9 +61,7 @@ func computeImageSignature(key []byte, imageID string, exp int64) []byte {
 }
 
 func signedImageURL(user User, imageID string) string {
-	// exp を10分単位で切り上げて、同じ画像の署名をメモ化から返せるようにする（#29）。
-	// 期限は24時間より短くならず、最大10分延びるだけ
-	exp := time.Now().Add(imageURLLifetime + imageExpStep - time.Second).Truncate(imageExpStep).Unix()
+	exp := time.Now().Add(imageURLLifetime).Unix()
 	query := url.Values{
 		"exp": {strconv.FormatInt(exp, 10)},
 		"sig": {base64.RawURLEncoding.EncodeToString(imageSignature(user.ImageKey, imageID, exp))},
