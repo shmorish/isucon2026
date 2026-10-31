@@ -57,22 +57,31 @@ BEGIN
   END LOOP;
 END $$;
 -- ベンチで書く画像の TOAST は1つなので、投稿の INSERT が TOAST の拡張ロック (Lock:extend) を取り合う (#50)。
--- 上で空にした範囲パーティションを、id のハッシュで 8 つに分けて作り直す (TOAST と拡張ロックも 8 つになる)。
--- 分けた後は relkind が 'p' になるので、次の initialize からは何もしない。初期データのパーティションには触れない。
+-- 上で空にした範囲パーティションのうち、ベンチと追試で書く月 (境界の日〜翌月) だけを id のハッシュで 8 つに分けて作り直す
+-- (TOAST と拡張ロックも 8 つになる)。それより後の月は分けない。分けると子テーブルが増え、created_at で絞れないクエリが
+-- 全部の子をロックして fast-path (16個) を溢れ、LWLock:LockManager を取り合う (#61)。分けた月が分かれていない、
+-- または分けない月が分かれているときだけ作り直すので、次の initialize からは何もしない。初期データのパーティションには触れない。
 DO $$
 DECLARE part record; k int;
 BEGIN
   FOR part IN
-    SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bound FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
-    WHERE i.inhparent = 'image_objects'::regclass AND c.relkind = 'r' AND c.relname <> 'image_objects_default'
+    SELECT c.relname, c.relkind = 'p' AS is_hash, pg_get_expr(c.relpartbound, c.oid) AS bound,
+      c.relname <= 'image_objects_' || to_char((SELECT created_at FROM initial_data_boundary) AT TIME ZONE 'UTC' + interval '1 month', 'YYYYMM') AS want_hash
+    FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'image_objects'::regclass AND c.relname <> 'image_objects_default'
       AND c.relname > 'image_objects_' || to_char((SELECT created_at FROM initial_data_boundary) AT TIME ZONE 'UTC', 'YYYYMM')
   LOOP
+    CONTINUE WHEN part.is_hash = part.want_hash;
     EXECUTE format('ALTER TABLE image_objects DETACH PARTITION %I', part.relname);
     EXECUTE format('DROP TABLE %I', part.relname);
-    EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s PARTITION BY HASH (id)', part.relname, part.bound);
-    FOR k IN 0..7 LOOP
-      EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS 8, REMAINDER %s)', part.relname || '_h' || k, part.relname, k);
-    END LOOP;
+    IF part.want_hash THEN
+      EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s PARTITION BY HASH (id)', part.relname, part.bound);
+      FOR k IN 0..7 LOOP
+        EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS 8, REMAINDER %s)', part.relname || '_h' || k, part.relname, k);
+      END LOOP;
+    ELSE
+      EXECUTE format('CREATE TABLE %I PARTITION OF image_objects %s', part.relname, part.bound);
+    END IF;
     EXECUTE format('ALTER TABLE %I ALTER COLUMN data SET STORAGE EXTERNAL', part.relname);
   END LOOP;
 END $$;
