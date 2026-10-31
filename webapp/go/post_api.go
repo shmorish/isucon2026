@@ -186,10 +186,7 @@ func getMyCurrentPostHandler(h *HandlerContext) echo.HandlerFunc {
      WHERE p.author_id = sess.user_id AND p.deleted_at IS NULL
    ) mine ON true
   `, foldedSessionTokenHash(c))
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err := acceptFoldedSession(c, h, err == nil, row.sessionColumns); err != nil {
+		if err := foldedSessionResult(c, h, err, row.sessionColumns); err != nil {
 			return err
 		}
 		if row.PostID == nil {

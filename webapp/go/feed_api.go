@@ -2,8 +2,6 @@ package isureal
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 	"sort"
 	"time"
@@ -50,19 +48,13 @@ func validateFeedRequest(c *echo.Context, input *getFeedRequest) error {
 func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input getFeedRequest
-		if err := validateFeedRequest(c, &input); err != nil {
-			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
-				return sessionErr
-			}
+		if err := foldedSessionBefore(c, h, validateFeedRequest(c, &input)); err != nil {
 			return err
 		}
 		ranked := input.Feed == "friends-of-friends"
 		ctx := c.Request().Context()
 		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c))
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err := acceptFoldedSession(c, h, err == nil, row.sessionColumns); err != nil {
+		if err := foldedSessionResult(c, h, err, row.sessionColumns); err != nil {
 			return err
 		}
 		viewer, err := newViewerContext(row.viewerContextRow)

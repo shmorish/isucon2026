@@ -1,8 +1,6 @@
 package isureal
 
 import (
-	"database/sql"
-	"errors"
 	"net/http"
 	"time"
 
@@ -50,10 +48,7 @@ func getCurrentPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
      GROUP BY w.id
    ) st ON true
   `, foldedSessionTokenHash(c))
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err := acceptFoldedSession(c, h, err == nil, state.sessionColumns); err != nil {
+		if err := foldedSessionResult(c, h, err, state.sessionColumns); err != nil {
 			return err
 		}
 		if state.ID == nil {

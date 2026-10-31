@@ -55,12 +55,7 @@ func getSessionFromHeader(c *echo.Context, db *sqlx.DB) (*Session, error) {
 		return nil, err
 	}
 	var session Session
-	err = db.GetContext(c.Request().Context(), &session, `
-		SELECT s.user_id, s.token_hash, s.created_at, u.region
-		FROM login_sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1
-		  AND s.active = true AND u.status = 'active'
-	`, tokenHash)
+	err = db.GetContext(c.Request().Context(), &session, "\n\t\t"+sessionLookup+"\n\t", tokenHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -109,12 +104,17 @@ func foldedSessionTokenHash(c *echo.Context) string {
 	return tokenHash
 }
 
-// LIMIT 1: the separate lookup took the first matching row the same way.
-const sessionCTE = `sess AS (
-		SELECT s.user_id, s.token_hash, s.created_at, u.region
+// sessionLookup is shared by getSessionFromHeader and sessionCTE so that the two cannot disagree on which tokens are
+// valid (401). The surrounding whitespace is kept as it was in each query.
+const sessionLookup = `SELECT s.user_id, s.token_hash, s.created_at, u.region
 		FROM login_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1
-		  AND s.active = true AND u.status = 'active'
+		  AND s.active = true AND u.status = 'active'`
+
+// LIMIT 1: the separate lookup took the first matching row the same way. getSessionFromHeader has no LIMIT 1: adding
+// it could change that query's plan.
+const sessionCTE = `sess AS (
+		` + sessionLookup + `
 		LIMIT 1
 	)`
 
@@ -145,13 +145,31 @@ func acceptFoldedSession(c *echo.Context, h *HandlerContext, found bool, cols se
 func requireFoldedSession(c *echo.Context, h *HandlerContext) error {
 	var cols sessionColumns
 	err := h.DB.GetContext(c.Request().Context(), &cols, `WITH `+sessionCTE+` SELECT `+sessionSelect+` FROM sess`, foldedSessionTokenHash(c))
-	if errors.Is(err, sql.ErrNoRows) {
-		return acceptFoldedSession(c, h, false, cols)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		err = fmt.Errorf("failed to get session: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+	return foldedSessionResult(c, h, err, cols)
+}
+
+// foldedSessionResult takes the error of a folded query: sql.ErrNoRows means no valid session (401), other errors
+// are returned as they are, and nil accepts the session in cols.
+func foldedSessionResult(c *echo.Context, h *HandlerContext, err error, cols sessionColumns) error {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
-	return acceptFoldedSession(c, h, true, cols)
+	return acceptFoldedSession(c, h, err == nil, cols)
+}
+
+// foldedSessionBefore is for an error (e.g. a 400) found before the folded query: the session is checked alone
+// first, and its 401/403 wins over err.
+func foldedSessionBefore(c *echo.Context, h *HandlerContext, err error) error {
+	if err == nil {
+		return nil
+	}
+	if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
+		return sessionErr
+	}
+	return err
 }
 
 func InvalidateLoginSession(db *sqlx.DB, userID string, tokenHash string) error {

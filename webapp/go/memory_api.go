@@ -48,10 +48,7 @@ func getMemoriesHandler(h *HandlerContext) echo.HandlerFunc {
 		if err == nil {
 			err = validateMemoryPagination(input.BeforePostedAt, input.BeforeID)
 		}
-		if err != nil {
-			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
-				return sessionErr
-			}
+		if err := foldedSessionBefore(c, h, err); err != nil {
 			return err
 		}
 		response, err := listMemories(c, h, start, start.AddDate(0, 1, 0), input.BeforePostedAt, input.BeforeID)
@@ -76,10 +73,7 @@ func getMemoriesByDateHandler(h *HandlerContext) echo.HandlerFunc {
 		if err == nil {
 			err = validateMemoryPagination(input.BeforePostedAt, input.BeforeID)
 		}
-		if err != nil {
-			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
-				return sessionErr
-			}
+		if err := foldedSessionBefore(c, h, err); err != nil {
 			return err
 		}
 		response, err := listMemories(c, h, start, start.AddDate(0, 0, 1), input.BeforePostedAt, input.BeforeID)
