@@ -1,14 +1,15 @@
 package isureal
 
 import (
+	"context"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
-
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type HandlerContext struct {
@@ -29,10 +30,11 @@ func NewServer(config *Config) *echo.Echo {
 	e.Use(middleware.Recover())
 	e.HTTPErrorHandler = APIErrorHandler
 
-	db, err := sqlx.Open("pgx", config.DatabaseDSN())
+	pgxConfig, err := pgx.ParseConfig(config.DatabaseDSN())
 	if err != nil {
-		panic("failed to open database: " + err.Error())
+		panic("failed to parse database config: " + err.Error())
 	}
+	db := sqlx.NewDb(stdlib.OpenDB(*pgxConfig, stdlib.OptionShouldPing(shouldPingIdleConn)), "pgx")
 	db.SetMaxOpenConns(30)
 	db.SetMaxIdleConns(30)
 	// 全台再起動で DB (s4) より先に起動しても落ちないよう、最大60秒待つ
@@ -100,4 +102,14 @@ func NewServer(config *Config) *echo.Echo {
 	e.POST("/api/admin/posting-window", openPostingWindowHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 
 	return e
+}
+
+// The default ping on reuse of a conn idle >1s costs a full round trip (~100ms from s2/s3).
+// A dead conn (e.g. after a PostgreSQL restart) has already received FATAL/EOF, which a
+// local non-blocking read detects; pinging it then fails and database/sql retries on a new conn.
+func shouldPingIdleConn(_ context.Context, p stdlib.ShouldPingParams) bool {
+	if p.IdleDuration <= time.Second {
+		return false
+	}
+	return p.Conn.PgConn().CheckConn() != nil
 }
