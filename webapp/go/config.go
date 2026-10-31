@@ -34,6 +34,8 @@ func (c *Config) DatabaseDSN() string {
 		User:   url.UserPassword(c.DBUser, c.DBPassword),
 		Host:   net.JoinHostPort(c.DBHost, c.DBPort),
 		Path:   "/" + c.DBName,
+		// DB is ~100ms away from s2/s3; skip the per-connection prepare round trip (#21)
+		RawQuery: "default_query_exec_mode=exec",
 	}
 	return u.String()
 }
