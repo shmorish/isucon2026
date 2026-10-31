@@ -65,7 +65,8 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 			return nil
 		}
 		if len(missing) > 0 {
-			if err := fetch(`SELECT id, data FROM image_objects WHERE id = ANY($1) AND created_at = ANY($2::timestamptz[])`, missing, missingPostedAt); err != nil {
+			// id = ANY AND created_at = ANY だと全パーティションで全 id を引くので、(id, created_at) の組で1パーティションずつ引く
+			if err := fetch(`SELECT i.id, i.data FROM unnest($1::varchar[], $2::timestamptz[]) AS k(id, created_at) JOIN image_objects i ON i.id = k.id AND i.created_at = k.created_at`, missing, missingPostedAt); err != nil {
 				return err
 			}
 		}
