@@ -391,10 +391,13 @@ func (user *User) requireActive() error {
 }
 
 // Not merged into the users lock statement: the counts need a snapshot taken after that lock is granted.
+// No FOR SHARE on the window row (#83): every post sharing one row made MultiXacts. The class 3 shared lock taken in
+// createPostLockSQL already keeps the opener from ending the window until this transaction commits, and this
+// statement's snapshot is taken after that lock, so it sees a window the opener ended while the post waited.
 // "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 const activeWindowWithPostCountsQuery = `
   WITH w AS (
-    SELECT id, local_date, starts_at FROM posting_windows WHERE region = $2 AND ended_at IS NULL FOR SHARE
+    SELECT id, local_date, starts_at FROM posting_windows WHERE region = $2 AND ended_at IS NULL
   )
   SELECT w.id, w.local_date, w.starts_at, c.active, c.deleted
   FROM w CROSS JOIN LATERAL (

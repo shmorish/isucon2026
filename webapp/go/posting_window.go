@@ -21,10 +21,10 @@ type PostingWindow struct {
 // them is built from the expressions below, so the window opener and the paths
 // it must exclude cannot drift apart.
 //
-// Order: post create locks its users row, then class 3 shared, then the window
-// row FOR SHARE. The window opener takes class 1, inserts the window,
-// then takes class 3 and only then row-locks the window. A class 3 holder never
-// waits for class 1 or for anything the opener holds, so there is no cycle.
+// Order: post create locks its users row, then class 3 shared, then reads the
+// active window (no row lock, #83). The window opener takes class 1, inserts the
+// window, then takes class 3 and only then updates the windows. A class 3 holder
+// never waits for class 1 or for anything the opener holds, so there is no cycle.
 const (
 	regionUsersLockClass = "1"
 	usernameLockClass    = "2"
@@ -68,8 +68,9 @@ var (
 // already waiting, so a stream of posts kept the window row share-locked and
 // the opener (holding class 1, so registration too) waited seconds. An
 // advisory lock queues a new shared request behind a waiting exclusive one, so
-// the opener only waits for posts already holding it. Which posts are accepted
-// is still decided by the window row lock and its ended_at recheck.
+// the opener only waits for posts already holding it. It is also what decides
+// which posts are accepted: a post holding it reads the active window after
+// getting it, and that window stays active until the post commits (#83).
 func lockRegionPosts(ctx context.Context, tx *sqlx.Tx, region string) error {
 	_, err := tx.ExecContext(ctx, lockRegionPostsSQL, region)
 	return err

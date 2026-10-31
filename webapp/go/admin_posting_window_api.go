@@ -57,7 +57,7 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := tx.GetContext(ctx, &startsAt, `SELECT clock_timestamp()`); err != nil {
 			return err
 		}
-		// Ending the current window row-locks it until commit, and posts in the region wait on that lock (FOR SHARE).
+		// Posts in the region wait on lockRegionPosts from the moment it is taken until commit.
 		// So the new window is inserted as ended (clear of posting_windows_one_active_region) and only then is the
 		// current window ended and the new one made active.
 		// Notifications are not inserted: notificationPollQuery derives them from the active window (#82). The INSERT of
