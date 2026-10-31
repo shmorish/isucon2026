@@ -64,11 +64,11 @@ tasks:
     cmds:
       - |
         set -e
-        # PostgreSQL の設定が変わったときだけ restart で再起動する
+        # 変わった PostgreSQL の設定ファイルを restart に渡す (reload で済むか判断する)
         rm -f /tmp/pg-conf-changed
         if [ -d {{.SERVER_ID}}/etc/postgresql ]; then
           (cd {{.SERVER_ID}}/etc && find postgresql -type f) | while read -r f; do
-            sudo cmp -s "{{.SERVER_ID}}/etc/$f" "/etc/$f" || touch /tmp/pg-conf-changed
+            sudo cmp -s "{{.SERVER_ID}}/etc/$f" "/etc/$f" || echo "$f" >> /tmp/pg-conf-changed
           done
         fi
         for d in nginx mysql postgresql sysctl.d systemd; do
@@ -88,12 +88,44 @@ tasks:
       - |
         set -e
         if systemctl is-enabled nginx >/dev/null 2>&1; then sudo nginx -t; fi
+        # 再起動はベンチ中の接続を切るので、PostgreSQL は reload で反映できない設定 (pending_restart) があるときだけ再起動する
+        # (go-task の shell は if の中の continue で if の残りを実行してしまうので、先に決めておく)
+        pg=restart
+        if [ -n "{{.PG_ENABLED}}" ] && systemctl is-active -q postgresql; then
+          pg=keep
+          if [ -e /tmp/pg-conf-changed ]; then
+            # environment / start.conf / pg_ctl.conf の変更は pending_restart に出ない
+            if grep -qvE '/(postgresql|pg_hba|pg_ident)\.conf$|/conf\.d/' /tmp/pg-conf-changed; then
+              pg=restart
+            else
+              task pg-reload
+              if [ "$({{.PSQL}} -At -c 'SELECT count(*) FROM pg_settings WHERE pending_restart')" != 0 ]; then pg=restart; fi
+            fi
+          fi
+        fi
         for s in nginx mysql postgresql {{.APP_SERVICE}}; do
           systemctl is-enabled $s >/dev/null 2>&1 || continue
-          if [ $s = postgresql ] && [ ! -e /tmp/pg-conf-changed ] && systemctl is-active -q $s; then continue; fi
+          if [ $s = postgresql ] && [ $pg = keep ]; then continue; fi
           sudo systemctl restart $s
         done
         rm -f /tmp/pg-conf-changed
+
+  pg-reload:
+    desc: s4 で実行。PostgreSQL の設定を再起動せずに反映する (再起動が要る設定は pending_restart として表示)
+    cmds:
+      - |
+        set -e
+        if [ -z "{{.PG_ENABLED}}" ]; then exit 0; fi
+        {{.PSQL}} -c 'SELECT pg_reload_conf()' >/dev/null
+        # pg_reload_conf() は SIGHUP を送るだけで、postmaster が読み直すのを待たない
+        sleep 1
+        errors=$({{.PSQL}} -At -c "SELECT f.sourcefile || ':' || f.sourceline || ': ' || coalesce(f.name || ': ', '') || f.error FROM pg_file_settings f LEFT JOIN pg_settings s ON s.name = lower(f.name) WHERE f.error IS NOT NULL AND NOT coalesce(s.pending_restart, false)")
+        if [ -n "$errors" ]; then
+          echo "PostgreSQL の設定に誤りがあり、反映されていない:" >&2
+          echo "$errors" >&2
+          exit 1
+        fi
+        {{.PSQL}} -At -c "SELECT 'pending_restart (反映には再起動が必要): ' || name FROM pg_settings WHERE pending_restart"
 
   bench-prep:
     desc: ベンチ前にログと pg_stat_statements を空にする
