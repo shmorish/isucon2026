@@ -14,7 +14,7 @@ end=$((SECONDS + DURATION))
 while [ $SECONDS -lt $end ]; do
   "${PSQL[@]}" -c "
     SELECT h.client_addr, h.state, round(extract(epoch FROM now() - h.xact_start)::numeric, 2),
-           left(regexp_replace(h.query, '\s+', ' ', 'g'), 90), left(regexp_replace(w.query, '\s+', ' ', 'g'), 90)
+           left(regexp_replace(h.query, '\s+', ' ', 'g'), 90), left(regexp_replace(w.query, '\s+', ' ', 'g'), 90), w.wait_event
     FROM pg_stat_activity w CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS b(pid)
     JOIN pg_stat_activity h ON h.pid = b.pid
     WHERE w.wait_event_type = 'Lock'" >> "$RAW" || true
@@ -29,4 +29,6 @@ done
   awk -F'|' '{ k = $1 "|" $2 "|" $4; n[k]++; s[k] += $3 } END { for (k in n) printf "%6d %6.2fs %s\n", n[k], s[k] / n[k], k }' "$RAW" | sort -rn | head -20
   echo "--- 待つ側のクエリ (件数)"
   cut -d'|' -f5 "$RAW" | sort | uniq -c | sort -rn | head -10
+  echo "--- 待つ側のロックの種類 (件数。extend はテーブル拡張、transactionid/tuple は行ロック)"
+  cut -d'|' -f6 "$RAW" | sort | uniq -c | sort -rn
 } | tee "$OUT"
