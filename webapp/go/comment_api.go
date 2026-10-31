@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"slices"
 	"sync"
 	"time"
 
@@ -39,47 +38,37 @@ func createCommentHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		actor := GetSession(c).UserID
-		post, err := getPost(ctx, h.DB, input.PostID)
-		if errors.Is(err, sql.ErrNoRows) {
+		tx, post, err := beginTxWithPost(ctx, h.DB, input.PostID)
+		if tx != nil {
+			defer tx.Rollback()
+		}
+		if err != nil {
+			return err
+		}
+		// Scalar subqueries run left to right, so the smaller id is locked first.
+		// When the commenter is the author the same row is share-locked twice, which is a no-op.
+		var firstID, secondID sql.NullString
+		if err := tx.QueryRowxContext(ctx, `SELECT (SELECT id FROM users WHERE id=$1 FOR SHARE), (SELECT id FROM users WHERE id=$2 FOR SHARE)`, min(actor, post.AuthorID), max(actor, post.AuthorID)).Scan(&firstID, &secondID); err != nil {
+			return err
+		}
+		if !firstID.Valid || !secondID.Valid {
+			return sql.ErrNoRows
+		}
+		current, viewer, found, err := loadPostAndViewerTx(ctx, tx, actor, post.ID)
+		if err != nil {
+			return err
+		}
+		if !found || !viewer.canComment(current.Post) {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
-		if err != nil {
-			return err
-		}
-		tx, err := h.DB.BeginTxx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		for _, id := range slices.Compact([]string{min(actor, post.AuthorID), max(actor, post.AuthorID)}) {
-			var lockedID string
-			if err := tx.GetContext(ctx, &lockedID, `SELECT id FROM users WHERE id=$1 FOR SHARE`, id); err != nil {
-				return err
-			}
-		}
-		allowed, err := canComment(ctx, tx, actor, post.ID)
-		if err != nil {
-			return err
-		}
-		if !allowed {
-			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
-		}
-		id := uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO comments(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,clock_timestamp())`, id, post.ID, actor, input.Body); err != nil {
-			return err
-		}
-		comment, err := getComment(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		user, err := getUser(ctx, tx, actor)
-		if err != nil {
+		var comment Comment
+		if err := tx.GetContext(ctx, &comment, `INSERT INTO comments(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,clock_timestamp()) RETURNING id,post_id,author_id,body,created_at,deleted_at`, uuid.NewString(), post.ID, actor, input.Body); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		return c.JSON(http.StatusCreated, newCommentResponse(comment, user))
+		return c.JSON(http.StatusCreated, newCommentResponse(comment, viewer.User))
 	}
 }
 
