@@ -2,11 +2,14 @@ package isureal
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/labstack/echo/v5"
 )
 
 func openTestDB(t *testing.T) *sqlx.DB {
@@ -133,4 +136,18 @@ func TestRegionPostsLockQueuesPostsBehindOpener(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireGranted(t, laterPostDone)
+}
+
+func TestServerRegionPrefersProxyHeader(t *testing.T) {
+	h := &HandlerContext{Config: &Config{Region: "asia"}}
+	for header, want := range map[string]string{"": "asia", "europe": "europe", "america": "america", "asia": "asia", "mars": "asia"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+		if header != "" {
+			req.Header.Set(serverRegionHeader, header)
+		}
+		c := echo.New().NewContext(req, httptest.NewRecorder())
+		if got := serverRegion(c, h); got != want {
+			t.Fatalf("header %q: got %q, want %q", header, got, want)
+		}
+	}
 }

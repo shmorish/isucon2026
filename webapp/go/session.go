@@ -138,7 +138,7 @@ func acceptFoldedSession(c *echo.Context, h *HandlerContext, found bool, cols se
 		return NewAPIError(http.StatusUnauthorized, "invalid_session")
 	}
 	c.Set("session", &Session{UserID: cols.SessUserID, TokenHash: cols.SessTokenHash, CreatedAt: cols.SessCreatedAt, Region: cols.SessRegion})
-	if cols.SessRegion != h.Config.Region {
+	if cols.SessRegion != serverRegion(c, h) {
 		return NewAPIError(http.StatusForbidden, "region_mismatch")
 	}
 	return nil
