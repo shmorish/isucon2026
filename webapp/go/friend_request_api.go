@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
 )
 
@@ -100,7 +102,16 @@ func transitionFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ctx := c.Request().Context()
 		actor := GetSession(c).UserID
+		// BEGIN は申請の取得と同時に送る。BEGIN だけではスナップショットもロックも取らない
+		var tx *sqlx.Tx
+		var txErr error
+		var wg sync.WaitGroup
+		wg.Go(func() { tx, txErr = h.DB.BeginTxx(ctx, nil) })
 		request, err := getFriendRequest(ctx, h.DB, input.RequestID)
+		wg.Wait()
+		if txErr == nil {
+			defer tx.Rollback()
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusNotFound, "relationship_not_found")
 		}
@@ -110,11 +121,15 @@ func transitionFriendRequestHandler(h *HandlerContext) echo.HandlerFunc {
 		if (status == "cancelled" && actor != request.RequesterID) || (status != "cancelled" && actor != request.RecipientID) {
 			return NewAPIError(http.StatusForbidden, "relationship_action_forbidden")
 		}
-		tx, err := beginRelationshipTx(ctx, h.DB, request.RequesterID, request.RecipientID)
-		if err != nil {
+		if err := validateUserPair(request.RequesterID, request.RecipientID); err != nil {
 			return err
 		}
-		defer tx.Rollback()
+		if txErr != nil {
+			return txErr
+		}
+		if err := lockUserPair(ctx, tx, request.RequesterID, request.RecipientID); err != nil {
+			return err
+		}
 		// ロックの後の読み直しとブロックの確認を1往復で行う
 		var current struct {
 			Status  string `db:"status"`
