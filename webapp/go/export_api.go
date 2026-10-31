@@ -2,7 +2,6 @@ package isureal
 
 import (
 	"archive/zip"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,35 +22,63 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		var posts []struct {
-			Post
-			ImageData []byte `db:"image_data"`
-		}
+		var posts []Post
 		if err := h.DB.SelectContext(ctx, &posts, `
-   SELECT `+postColumns+`, i.data AS image_data
+   SELECT `+postColumns+`
    FROM posts p
    JOIN posting_windows w ON w.id = p.posting_window_id
-   JOIN image_objects i ON i.id = p.image_id
    WHERE p.author_id = $1 AND p.deleted_at IS NULL
    ORDER BY p.posted_at, p.id
   `, userID); err != nil {
 			return err
 		}
 
-		var body bytes.Buffer
-		writer := zip.NewWriter(&body)
+		// 画像本体はキャッシュにないものだけ DB から1回で取る
+		images := make(map[string][]byte, len(posts))
+		var missing []string
+		for _, post := range posts {
+			if data, ok := imageDataCache.get(post.ImageID); ok {
+				images[post.ImageID] = data
+			} else {
+				missing = append(missing, post.ImageID)
+			}
+		}
+		if len(missing) > 0 {
+			var rows []struct {
+				ID   string `db:"id"`
+				Data []byte `db:"data"`
+			}
+			if err := h.DB.SelectContext(ctx, &rows, `SELECT id, data FROM image_objects WHERE id = ANY($1)`, missing); err != nil {
+				return err
+			}
+			for _, r := range rows {
+				images[r.ID] = r.Data
+				imageDataCache.put(r.ID, r.Data)
+			}
+		}
+
+		c.Response().Header().Set(echo.HeaderContentType, "application/zip")
+		c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="isureal-posts.zip"`)
+		c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
+		c.Response().WriteHeader(http.StatusOK)
+		writer := zip.NewWriter(c.Response())
 		defer writer.Close()
 		items := make([]exportPostResponse, 0, len(posts))
 		for _, post := range posts {
+			data, ok := images[post.ImageID]
+			if !ok {
+				// 元の JOIN image_objects と同じく、画像のない投稿は含めない
+				continue
+			}
 			imagePath := fmt.Sprintf("images/%06d.jpg", len(items)+1)
 			image, err := writer.CreateHeader(&zip.FileHeader{Name: imagePath, Method: zip.Store})
 			if err != nil {
 				return err
 			}
-			if _, err := image.Write(post.ImageData); err != nil {
+			if _, err := image.Write(data); err != nil {
 				return err
 			}
-			items = append(items, exportPostResponse{createPostResponse: newPostResponse(post.Post, author), ImagePath: imagePath})
+			items = append(items, exportPostResponse{createPostResponse: newPostResponse(post, author), ImagePath: imagePath})
 		}
 		manifest, err := writer.Create("posts.json")
 		if err != nil {
@@ -60,11 +87,6 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		if err := json.NewEncoder(manifest).Encode(items); err != nil {
 			return err
 		}
-		if err := writer.Close(); err != nil {
-			return err
-		}
-		c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="isureal-posts.zip"`)
-		c.Response().Header().Set(echo.HeaderCacheControl, "no-store")
-		return c.Blob(http.StatusOK, "application/zip", body.Bytes())
+		return writer.Close()
 	}
 }
