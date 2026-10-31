@@ -68,10 +68,6 @@ func ActionLogMiddleware(minLevel string, output io.Writer) echo.MiddlewareFunc 
 			switch {
 			case status >= http.StatusInternalServerError:
 				level = "error"
-			// isureal-guard は失敗の行しか読まない。成功の行（ベンチ中に毎秒約 400 行）は journald と guard の
-			// journalctl で s1 の CPU を 15% ほど使っていた
-			case status < http.StatusBadRequest:
-				level = "debug"
 			case c.Request().Method == http.MethodGet && !(status == http.StatusForbidden && c.Get("abuse") == "invalid_signature"):
 				level = "debug"
 			}
