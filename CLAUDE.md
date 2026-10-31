@@ -48,7 +48,7 @@
 ベンチ直前に計測を始めるよう人間に頼まれたら、手元で次を実行する（75秒で終わる）。
 
 ```
-for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
+for h in s1 s2 s3 s4; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
 ```
 
 ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'`（s2・s3 も）と `ssh s4 'cd ~ && task slp && task pgstat'` を実行して結果を読む。

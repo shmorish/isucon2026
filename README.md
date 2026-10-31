@@ -34,7 +34,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `task pg-reload` | s4 の PostgreSQL の設定を手で反映するとき（再起動しない。再起動が要る設定は `pending_restart` と表示）。`task deploy` も同じ判断で、reload で済まないときだけ再起動する |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
-| `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。3台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
+| `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。全台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
 
 ---
 
@@ -246,7 +246,7 @@ task pprof
 同じくベンチの直前に、手元から3台の CPU・メモリの記録を同時に始める（75秒間。ベンチより少し長めに取る）。
 
 ```bash
-for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
+for h in s1 s2 s3 s4; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
 ```
 
 ポータルでベンチを回し、結果が出たら集計して記録する。
