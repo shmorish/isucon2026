@@ -127,7 +127,7 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 // 1本のクエリだと画像を1行ずつ順にディスクから読むので、投稿順に連続した塊に分けて同時に取る。
 // 塊は全部同時に投げる（s2/s3 で待ちを1往復にするため）。DB 接続を食い尽くさないよう本数は抑える
 const (
-	exportFetchMaxChunks    = 6
+	exportFetchMaxChunks    = 3
 	exportFetchMinChunkRows = 16
 )
 
