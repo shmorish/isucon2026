@@ -127,14 +127,21 @@ func scanJSON(src any, dest any) error {
 	}
 }
 
-var viewerContextQuery = `
-  WITH me AS (
-    SELECT ` + strings.Join(userColumns, ", ") + ` FROM users WHERE id = $1 AND status = 'active'
+var viewerContextQuery = viewerContextSQL("", "$1", "", "")
+
+// viewerContextBySessionQuery is viewerContextQuery for the viewer of the session whose token hash is $1.
+// sess and me use the same active-user conditions, so a valid session always has its me row.
+var viewerContextBySessionQuery = viewerContextSQL(sessionCTE+", ", "(SELECT user_id FROM sess)", sessionSelect+", ", "sess, ")
+
+func viewerContextSQL(with, viewerID, extraColumns, extraFrom string) string {
+	return `
+  WITH ` + with + `me AS (
+    SELECT ` + strings.Join(userColumns, ", ") + ` FROM users WHERE id = ` + viewerID + ` AND status = 'active'
   ), friend_ids AS (
-    SELECT CASE WHEN user_low_id = $1 THEN user_high_id ELSE user_low_id END AS id
-    FROM friendships WHERE user_low_id = $1 OR user_high_id = $1
+    SELECT CASE WHEN user_low_id = ` + viewerID + ` THEN user_high_id ELSE user_low_id END AS id
+    FROM friendships WHERE user_low_id = ` + viewerID + ` OR user_high_id = ` + viewerID + `
   )
-  SELECT me.*,
+  SELECT ` + extraColumns + `me.*,
     EXISTS(
       SELECT 1 FROM posts p
       JOIN posting_windows posted ON posted.id = p.posting_window_id
@@ -143,29 +150,49 @@ var viewerContextQuery = `
       WHERE p.author_id = me.id AND p.deleted_at IS NULL
     ) AS has_posted_today,
     COALESCE((
-      SELECT json_agg(CASE WHEN blocker_id = $1 THEN blocked_id ELSE blocker_id END)
-      FROM block_relations WHERE blocker_id = $1 OR blocked_id = $1
+      SELECT json_agg(CASE WHEN blocker_id = ` + viewerID + ` THEN blocked_id ELSE blocker_id END)
+      FROM block_relations WHERE blocker_id = ` + viewerID + ` OR blocked_id = ` + viewerID + `
     ), '[]'::json) AS blocked_ids,
     COALESCE((SELECT json_agg(id) FROM friend_ids), '[]'::json) AS friend_ids,
     COALESCE((
       SELECT json_agg(json_build_array(user_low_id, user_high_id)) FROM friendships
       WHERE user_low_id = ANY(ARRAY(SELECT id FROM friend_ids)) OR user_high_id = ANY(ARRAY(SELECT id FROM friend_ids))
     ), '[]'::json) AS friend_friendships
-  FROM me
+  FROM ` + extraFrom + `me
 `
+}
+
+type viewerContextRow struct {
+	User
+	HasPostedToday    bool            `db:"has_posted_today"`
+	BlockedIDs        jsonStrings     `db:"blocked_ids"`
+	FriendIDs         jsonStrings     `db:"friend_ids"`
+	FriendFriendships jsonStringPairs `db:"friend_friendships"`
+}
 
 func loadViewerContext(ctx context.Context, db sqlx.QueryerContext, viewerID string) (viewerContext, error) {
-	viewer := viewerContext{Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}
-	var row struct {
-		User
-		HasPostedToday    bool            `db:"has_posted_today"`
-		BlockedIDs        jsonStrings     `db:"blocked_ids"`
-		FriendIDs         jsonStrings     `db:"friend_ids"`
-		FriendFriendships jsonStringPairs `db:"friend_friendships"`
-	}
+	var row viewerContextRow
 	if err := sqlx.GetContext(ctx, db, &row, viewerContextQuery, viewerID); err != nil {
-		return viewer, err
+		return viewerContext{Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}, err
 	}
+	return newViewerContext(row)
+}
+
+type viewerContextBySessionRow struct {
+	sessionColumns
+	viewerContextRow
+}
+
+// selectViewerContextBySession returns sql.ErrNoRows when the session is not valid. The caller checks the session
+// (acceptFoldedSession) before newViewerContext, whose errors must not win over 403 region_mismatch.
+func selectViewerContextBySession(ctx context.Context, db sqlx.QueryerContext, tokenHash string) (viewerContextBySessionRow, error) {
+	var row viewerContextBySessionRow
+	err := sqlx.GetContext(ctx, db, &row, viewerContextBySessionQuery, tokenHash)
+	return row, err
+}
+
+func newViewerContext(row viewerContextRow) (viewerContext, error) {
+	viewer := viewerContext{Friends: map[string]bool{}, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}}
 	viewer.User = row.User
 	if err := viewer.User.setImageKey(); err != nil {
 		return viewer, err

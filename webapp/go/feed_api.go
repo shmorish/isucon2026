@@ -29,29 +29,43 @@ type getFeedResponse struct {
 	HasMore bool               `json:"hasMore"`
 }
 
+func validateFeedRequest(c *echo.Context, input *getFeedRequest) error {
+	if err := c.Bind(input); err != nil {
+		return err
+	}
+	switch input.Feed {
+	case "friends", "friends-of-friends", "public", "following":
+	default:
+		return NewAPIError(http.StatusBadRequest, "invalid_post")
+	}
+	if (input.BeforePostedAt == nil) != (input.BeforeID == "") {
+		return NewAPIError(http.StatusBadRequest, "invalid_pagination")
+	}
+	if input.Feed == "friends-of-friends" && (input.BeforeScore == nil) != (input.BeforeID == "") {
+		return NewAPIError(http.StatusBadRequest, "invalid_pagination")
+	}
+	return nil
+}
+
 func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input getFeedRequest
-		if err := c.Bind(&input); err != nil {
+		if err := validateFeedRequest(c, &input); err != nil {
+			if sessionErr := requireFoldedSession(c, h); sessionErr != nil {
+				return sessionErr
+			}
 			return err
 		}
-		switch input.Feed {
-		case "friends", "friends-of-friends", "public", "following":
-		default:
-			return NewAPIError(http.StatusBadRequest, "invalid_post")
-		}
-		if (input.BeforePostedAt == nil) != (input.BeforeID == "") {
-			return NewAPIError(http.StatusBadRequest, "invalid_pagination")
-		}
 		ranked := input.Feed == "friends-of-friends"
-		if ranked && (input.BeforeScore == nil) != (input.BeforeID == "") {
-			return NewAPIError(http.StatusBadRequest, "invalid_pagination")
-		}
 		ctx := c.Request().Context()
-		viewer, err := loadViewerContext(ctx, h.DB, GetSession(c).UserID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return c.JSON(http.StatusOK, getFeedResponse{Items: []feedItemResponse{}})
+		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
+		if err := acceptFoldedSession(c, h, err == nil, row.sessionColumns); err != nil {
+			return err
+		}
+		viewer, err := newViewerContext(row.viewerContextRow)
 		if err != nil {
 			return err
 		}
