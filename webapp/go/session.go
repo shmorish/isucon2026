@@ -79,27 +79,21 @@ func SessionMiddleware(handlerContext *HandlerContext, authRequired bool) echo.M
 }
 
 func InvalidateLoginSession(db *sqlx.DB, userID string, tokenHash string) error {
-	tx, err := db.Beginx()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
+	// One autocommit statement instead of BEGIN/lock/UPDATE/COMMIT. The main query reads locked, and the UPDATE CTE it does not
+	// reference only runs after the main query has finished, so the user row is locked before any session row, as before.
+	// The statement's snapshot predates the lock wait, which only matters for rows created meanwhile: the target session
+	// already exists, and a concurrent change to it is rechecked against the latest row version.
 	var lockedUserID string
-	if err := tx.Get(&lockedUserID, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID); err != nil {
-		return fmt.Errorf("failed to lock user: %w", err)
-	}
-
-	if _, err := tx.Exec(`
-		UPDATE login_sessions
-		SET active = false, invalidated_at = clock_timestamp(), reason = 'logout'
-		WHERE user_id = $1 AND active = true AND token_hash = $2	
+	if err := db.Get(&lockedUserID, `
+		WITH locked AS (SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE),
+		logout AS (
+			UPDATE login_sessions
+			SET active = false, invalidated_at = clock_timestamp(), reason = 'logout'
+			WHERE user_id = (SELECT id FROM locked) AND active = true AND token_hash = $2
+		)
+		SELECT id FROM locked
 	`, userID, tokenHash); err != nil {
-		return fmt.Errorf("failed to invalidate sessions: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		return fmt.Errorf("failed to lock user: %w", err)
 	}
 
 	return nil
