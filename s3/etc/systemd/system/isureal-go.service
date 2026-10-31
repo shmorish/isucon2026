@@ -8,6 +8,7 @@ User=isucon
 Group=isucon
 WorkingDirectory=/home/isucon/webapp/go
 EnvironmentFile=/home/isucon/env.sh
+Environment=NO_PPROF=1
 ExecStart=/home/isucon/webapp/go/isureal
 Restart=on-failure
 RestartSec=5
