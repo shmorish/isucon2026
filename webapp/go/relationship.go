@@ -3,7 +3,6 @@ package isureal
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 	"time"
 
@@ -26,22 +25,11 @@ func getFriendRequest(ctx context.Context, db sqlx.QueryerContext, id string) (F
 	return request, err
 }
 
-const (
-	lockActiveUserExclusive = `SELECT id FROM users WHERE id=$1 AND status='active' FOR NO KEY UPDATE`
-	lockActiveUserShared    = `SELECT id FROM users WHERE id=$1 AND status='active' FOR SHARE`
-)
-
+// beginRelationshipTx は actor を FOR NO KEY UPDATE、target を FOR SHARE でロックする。
+// 関係の変更は2人のペアの中で閉じているので、同じペアへの操作は actor 側の排他と相手側の共有がぶつかって直列になる。
+// 相手の退会や認証済みへの変更（本人の行の FOR NO KEY UPDATE・UPDATE）とも競合する。
+// 人気ユーザーへのフォローや申請は、相手側が共有ロックなので同時に進む。
 func beginRelationshipTx(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, error) {
-	return beginUserPairTx(ctx, db, actor, target, lockActiveUserExclusive)
-}
-
-// beginReactionTx locks the target FOR SHARE, which still conflicts with the
-// target's deletion and relationship changes but not with other reactions.
-func beginReactionTx(ctx context.Context, db *sqlx.DB, actor, target string) (*sqlx.Tx, error) {
-	return beginUserPairTx(ctx, db, actor, target, lockActiveUserShared)
-}
-
-func beginUserPairTx(ctx context.Context, db *sqlx.DB, actor, target, targetLock string) (*sqlx.Tx, error) {
 	if actor == target || target == "" {
 		return nil, NewAPIError(http.StatusBadRequest, "invalid_relationship")
 	}
@@ -49,32 +37,27 @@ func beginUserPairTx(ctx context.Context, db *sqlx.DB, actor, target, targetLock
 	if err != nil {
 		return nil, err
 	}
-	if targetLock == lockActiveUserExclusive {
-		// 1往復で2行ともロックする。LockRows は Sort の上で動くので、ID 順にロックされる
-		var lockedIDs []string
-		if err := tx.SelectContext(ctx, &lockedIDs, `SELECT id FROM users WHERE id IN ($1, $2) AND status='active' ORDER BY id FOR NO KEY UPDATE`, actor, target); err != nil {
-			tx.Rollback()
-			return nil, err
+	// 1往復で2行をロックする。対象リストは左から評価されるので、ID の小さい方から先にロックされる
+	lock := func(id string) string {
+		if id == actor {
+			return "FOR NO KEY UPDATE"
 		}
-		if len(lockedIDs) != 2 {
-			tx.Rollback()
-			return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
-		}
-		return tx, nil
+		return "FOR SHARE"
 	}
-	for _, id := range []string{min(actor, target), max(actor, target)} {
-		lock := lockActiveUserExclusive
-		if id == target {
-			lock = targetLock
-		}
-		var lockedID string
-		if err := tx.GetContext(ctx, &lockedID, lock, id); err != nil {
-			tx.Rollback()
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
-			}
-			return nil, err
-		}
+	low, high := min(actor, target), max(actor, target)
+	var locked struct {
+		Low  *string `db:"low"`
+		High *string `db:"high"`
+	}
+	if err := tx.GetContext(ctx, &locked, `SELECT
+   (SELECT id FROM users WHERE id=$1 AND status='active' `+lock(low)+`) AS low,
+   (SELECT id FROM users WHERE id=$2 AND status='active' `+lock(high)+`) AS high`, low, high); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+	if locked.Low == nil || locked.High == nil {
+		tx.Rollback()
+		return nil, NewAPIError(http.StatusNotFound, "relationship_not_found")
 	}
 	return tx, nil
 }

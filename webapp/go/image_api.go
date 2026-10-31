@@ -48,11 +48,16 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			MediaType     string    `db:"media_type"`
 			CreatedAt     time.Time `db:"created_at"`
 			Visible       bool      `db:"visible"`
+			Data          []byte    `db:"data"`
 		}
+		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
+		// 持っていなければ同じ問い合わせで data も読む
+		data, cached := imageDataCache.get(input.ImageID)
+		q := imageMetaQueries[!cached]
 		if createdAt, ok := imageCreatedAtCache.get(input.ImageID); ok {
-			err = h.DB.GetContext(ctx, &meta, imageMetaByCreatedAtQuery, input.ImageID, createdAt)
+			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, input.ImageID, createdAt)
 		} else {
-			err = h.DB.GetContext(ctx, &meta, imageMetaQuery, input.ImageID)
+			err = h.DB.GetContext(ctx, &meta, q.byID, input.ImageID)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
@@ -72,17 +77,8 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if !meta.Visible {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
 		}
-
-		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ
-		data, ok := imageDataCache.get(input.ImageID)
-		if !ok {
-			err = h.DB.GetContext(ctx, &data, `SELECT data FROM image_objects WHERE id = $1 AND created_at = $2`, input.ImageID, meta.CreatedAt)
-			if errors.Is(err, sql.ErrNoRows) {
-				return NewAPIError(http.StatusForbidden, "image_forbidden")
-			}
-			if err != nil {
-				return err
-			}
+		if !cached {
+			data = meta.Data
 			imageDataCache.put(input.ImageID, data)
 		}
 		if exp <= time.Now().Unix() {
@@ -92,8 +88,9 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-const imageMetaSelect = `
-   SELECT u.secret_key_hash, i.media_type, i.created_at, (
+func imageMetaSelect(cols string) string {
+	return `
+   SELECT ` + cols + `u.secret_key_hash, i.media_type, i.created_at, (
      u.profile_image_id = i.id
      OR EXISTS (
        SELECT 1 FROM posts p
@@ -106,26 +103,39 @@ const imageMetaSelect = `
        WHERE r.image_id = i.id AND r.reactor_id = u.id AND r.replaced_at IS NULL AND r.deleted_at IS NULL
      )
    ) IS TRUE AS visible`
+}
+
+type imageMetaQuery struct{ byID, byCreatedAt string }
 
 // image_objects は created_at で分割されていて id だけだと全パーティションの主キーを引く。
 // 投稿の画像は created_at = posts.posted_at なので先にそれで1パーティションだけ引き、
-// 見つからないとき（RealMoji・プロフィール画像）だけ全パーティションを引く
-const imageMetaQuery = `
+// 見つからないとき（RealMoji・プロフィール画像）だけ全パーティションを引く。
+// true のほうは data も読む
+var imageMetaQueries = map[bool]imageMetaQuery{
+	false: newImageMetaQuery(""),
+	true:  newImageMetaQuery("i.data, "),
+}
+
+func newImageMetaQuery(cols string) imageMetaQuery {
+	imgCols := cols + "i.id, i.owner_user_id, i.media_type, i.created_at"
+	return imageMetaQuery{
+		byID: `
    WITH by_post AS (
-     SELECT i.id, i.owner_user_id, i.media_type, i.created_at FROM image_objects i
+     SELECT ` + imgCols + ` FROM image_objects i
      WHERE i.id = $1 AND i.created_at = (SELECT p.posted_at FROM posts p WHERE p.image_id = $1 LIMIT 1)
    ), img AS (
      SELECT * FROM by_post
      UNION ALL
-     SELECT i.id, i.owner_user_id, i.media_type, i.created_at FROM image_objects i
+     SELECT ` + imgCols + ` FROM image_objects i
      WHERE i.id = $1 AND NOT EXISTS (SELECT 1 FROM by_post)
-   )` + imageMetaSelect + `
+   )` + imageMetaSelect(cols) + `
    FROM img i JOIN users u ON u.id = i.owner_user_id
-   WHERE u.status = 'active'`
-
-const imageMetaByCreatedAtQuery = imageMetaSelect + `
+   WHERE u.status = 'active'`,
+		byCreatedAt: imageMetaSelect(cols) + `
    FROM image_objects i JOIN users u ON u.id = i.owner_user_id
-   WHERE i.id = $1 AND i.created_at = $2 AND u.status = 'active'`
+   WHERE i.id = $1 AND i.created_at = $2 AND u.status = 'active'`,
+	}
+}
 
 // INSERT 時の値は入れない。DB 側でマイクロ秒に丸められて一致しなくなるため、DB から読んだ値だけを覚える。
 // id は UUID で再利用されず created_at も変わらないので、初期化で消えた画像の値が残っても該当行なしになるだけ。
