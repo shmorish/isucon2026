@@ -60,9 +60,12 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if cached {
 			q = imageMetaQueryMetaOnly
 		}
-		if createdAt, ok := imageCreatedAtCache.get(input.ImageID); ok {
+		createdAt, ok := imageCreatedAtCache.get(input.ImageID)
+		if ok {
 			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, binaryImage, input.ImageID, createdAt)
-		} else {
+		}
+		// 覚えた created_at で見つからないとき（画像の created_at が投稿の posted_at と違うなど）は id だけで引き直す
+		if !ok || errors.Is(err, sql.ErrNoRows) {
 			err = h.DB.GetContext(ctx, &meta, q.byID, binaryImage, input.ImageID)
 		}
 		if errors.Is(err, sql.ErrNoRows) {

@@ -173,6 +173,9 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 }
 
 func newPostResponse(post Post, user User) createPostResponse {
+	// 投稿の画像の created_at は posted_at と同じ値で入れている。DB から読んだ posted_at を覚えておくと、
+	// 続く GET /api/images が created_at で1パーティションだけを引ける（#63）
+	imageCreatedAtCache.put(post.ImageID, post.PostedAt)
 	response := createPostResponse{
 		ID: post.ID,
 		Author: postAuthorResponse{
