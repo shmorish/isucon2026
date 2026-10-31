@@ -119,7 +119,7 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		cacheUploadedImage(imageID, data)
-		imageCreatedAtCache.put(imageID, reaction.CreatedAt)
+		rememberUploadedImageMeta(imageID, actor, reaction.CreatedAt)
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))
 	}
 }

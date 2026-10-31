@@ -57,6 +57,7 @@ func requireSameJSON(t *testing.T, name string, text, binary any) {
 
 type testImageMeta struct {
 	SecretKeyHash string    `db:"secret_key_hash"`
+	OwnerUserID   string    `db:"owner_user_id"`
 	MediaType     string    `db:"media_type"`
 	CreatedAt     time.Time `db:"created_at"`
 	Visible       bool      `db:"visible"`

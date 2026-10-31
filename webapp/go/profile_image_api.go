@@ -58,7 +58,7 @@ func putProfileImageHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		cacheUploadedImage(imageID, data)
-		imageCreatedAtCache.put(imageID, createdAt)
+		rememberUploadedImageMeta(imageID, userID, createdAt)
 		return c.NoContent(http.StatusNoContent)
 	}
 }
@@ -86,6 +86,8 @@ func deleteImageObject(ctx context.Context, tx *sqlx.Tx, ref profileImageRef) er
 	if ref.ImageID == nil {
 		return nil
 	}
+	// 消した画像を覚えたままでも visible が偽になって image_objects を引き直すだけだが、念のため忘れる（#79）
+	imageMetaCache.delete(*ref.ImageID)
 	result, err := tx.ExecContext(ctx, `DELETE FROM image_objects WHERE id=$1 AND created_at=$2`, *ref.ImageID, ref.UpdatedAt)
 	if err != nil {
 		return err

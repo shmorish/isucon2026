@@ -49,13 +49,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 
 		ctx := c.Request().Context()
 		// 署名鍵と削除状態を1回で確認する。即時反映も5秒以内の許容範囲に含まれる。
-		var meta struct {
-			SecretKeyHash string    `db:"secret_key_hash"`
-			MediaType     string    `db:"media_type"`
-			CreatedAt     time.Time `db:"created_at"`
-			Visible       bool      `db:"visible"`
-			Data          []byte    `db:"data"`
-		}
+		var meta imageMetaRow
 		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
 		// 持っていなければ同じ問い合わせで data も読む。s1 の nginx 経由でディスクに完全なファイルがあれば、
 		// 確認だけしてファイルの送信は nginx に任せる（#76）
@@ -68,34 +62,57 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		if !accel {
 			data, cached = getImageData(input.ImageID)
 		}
-		q := imageMetaQueryWithData
-		if cached {
-			q = imageMetaQueryMetaOnly
-		}
-		createdAt, ok := imageCreatedAtCache.get(input.ImageID)
-		if !ok {
-			// 覚えていなければ、画像を参照している行から created_at を引いてくる。id だけの検索は全パーティションを
-			// ロックする（1回あたり relation ロック 94 個、fast-path に収まるのは 16 個）ので、最後の手段にする
-			var referenced sql.NullTime
-			if err := h.DB.GetContext(ctx, &referenced, imageCreatedAtLookupQuery, input.ImageID); err != nil {
+		// owner・media_type・created_at も作成後に変わらないので覚えておき、本体が手元にあるときは image_objects を
+		// 引かずに「今見せてよいか」だけを users・posts・realmojis で判定する（#79）。
+		// 見せられないときは今までどおり image_objects を引く。消えた画像（差し替え前のプロフィール画像）と
+		// 削除された投稿の画像で、署名を確認する前に 403 にするか（abuse の記録の有無）が変わらないようにするため
+		known, hit := imageMetaCache.get(input.ImageID)
+		checked := false
+		if hit && cached {
+			var owner imageOwnerRow
+			err = h.DB.GetContext(ctx, &owner, imageOwnerQuery, input.ImageID, known.Owner)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
-			createdAt, ok = referenced.Time, referenced.Valid
+			if err == nil && owner.Visible {
+				meta = imageMetaRow{SecretKeyHash: owner.SecretKeyHash, OwnerUserID: known.Owner, MediaType: known.MediaType, CreatedAt: known.CreatedAt, Visible: true}
+				checked = true
+			}
 		}
-		if ok {
-			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, binaryImage, input.ImageID, createdAt)
+		if !checked {
+			q := imageMetaQueryWithData
+			if cached {
+				q = imageMetaQueryMetaOnly
+			}
+			createdAt, ok := known.CreatedAt, hit
+			if !ok {
+				createdAt, ok = imageCreatedAtCache.get(input.ImageID)
+			}
+			if !ok {
+				// 覚えていなければ、画像を参照している行から created_at を引いてくる。id だけの検索は全パーティションを
+				// ロックする（1回あたり relation ロック 94 個、fast-path に収まるのは 16 個）ので、最後の手段にする
+				var referenced sql.NullTime
+				if err := h.DB.GetContext(ctx, &referenced, imageCreatedAtLookupQuery, input.ImageID); err != nil {
+					return err
+				}
+				createdAt, ok = referenced.Time, referenced.Valid
+			}
+			if ok {
+				err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, binaryImage, input.ImageID, createdAt)
+			}
+			// 引いた created_at で見つからないとき（画像の created_at が参照元の時刻と違うなど）は id だけで引き直す
+			if !ok || errors.Is(err, sql.ErrNoRows) {
+				err = h.DB.GetContext(ctx, &meta, q.byID, binaryImage, input.ImageID)
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				return NewAPIError(http.StatusForbidden, "image_forbidden")
+			}
+			if err != nil {
+				return err
+			}
+			imageCreatedAtCache.put(input.ImageID, meta.CreatedAt)
+			imageMetaCache.put(input.ImageID, imageMeta{Owner: meta.OwnerUserID, MediaType: meta.MediaType, CreatedAt: meta.CreatedAt})
 		}
-		// 引いた created_at で見つからないとき（画像の created_at が参照元の時刻と違うなど）は id だけで引き直す
-		if !ok || errors.Is(err, sql.ErrNoRows) {
-			err = h.DB.GetContext(ctx, &meta, q.byID, binaryImage, input.ImageID)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return NewAPIError(http.StatusForbidden, "image_forbidden")
-		}
-		if err != nil {
-			return err
-		}
-		imageCreatedAtCache.put(input.ImageID, meta.CreatedAt)
 		key, err := imageSigningKey(meta.SecretKeyHash)
 		if err != nil {
 			return err
@@ -124,21 +141,67 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
-func imageMetaSelect(cols string) string {
-	return `
-   SELECT ` + cols + `u.secret_key_hash, i.media_type, i.created_at, (
-     u.profile_image_id = i.id
+type imageMetaRow struct {
+	SecretKeyHash string    `db:"secret_key_hash"`
+	OwnerUserID   string    `db:"owner_user_id"`
+	MediaType     string    `db:"media_type"`
+	CreatedAt     time.Time `db:"created_at"`
+	Visible       bool      `db:"visible"`
+	Data          []byte    `db:"data"`
+}
+
+// imageVisibleExpr は所有者 u の画像 image を今見せてよいかで、imageMetaSelect と imageOwnerQuery で同じ式を使う
+func imageVisibleExpr(image string) string {
+	return `(
+     u.profile_image_id = ` + image + `
      OR EXISTS (
        SELECT 1 FROM posts p
-       WHERE p.image_id = i.id AND p.author_id = u.id AND p.deleted_at IS NULL
+       WHERE p.image_id = ` + image + ` AND p.author_id = u.id AND p.deleted_at IS NULL
      )
      OR EXISTS (
        SELECT 1 FROM realmojis r
        JOIN posts p ON p.id = r.post_id AND p.deleted_at IS NULL
        JOIN users author ON author.id = p.author_id AND author.status = 'active'
-       WHERE r.image_id = i.id AND r.reactor_id = u.id AND r.replaced_at IS NULL AND r.deleted_at IS NULL
+       WHERE r.image_id = ` + image + ` AND r.reactor_id = u.id AND r.replaced_at IS NULL AND r.deleted_at IS NULL
      )
    ) IS TRUE AS visible`
+}
+
+func imageMetaSelect(cols string) string {
+	return `
+   SELECT ` + cols + `u.secret_key_hash, i.owner_user_id, i.media_type, i.created_at, ` + imageVisibleExpr("i.id")
+}
+
+// imageOwnerQuery は imageMetaQuery の image_objects 抜きの形。$1 の画像が $2 の所有で存在することは imageMetaCache が
+// 保証する（owner は作成後に変わらず、id は使い回されない）ので、残りの判定は byID/byCreatedAt と同じになる
+var imageOwnerQuery = `
+   SELECT u.secret_key_hash, ` + imageVisibleExpr("$1") + `
+   FROM users u WHERE u.id = $2 AND u.status = 'active'`
+
+type imageOwnerRow struct {
+	SecretKeyHash string `db:"secret_key_hash"`
+	Visible       bool   `db:"visible"`
+}
+
+// imageMeta は image_objects の変わらない列。DB から読んだ値（RETURNING を含む）だけを入れる（imageCreatedAtCache と同じ理由）
+type imageMeta struct {
+	Owner     string
+	MediaType string
+	CreatedAt time.Time
+}
+
+var imageMetaCache = newBoundedCache(imageCreatedAtCacheMaxEntries, func(imageMeta) int { return 1 })
+
+// rememberUploadedImageMeta は自分で INSERT した画像を覚える。アプリが入れる画像はすべて image/jpeg
+func rememberUploadedImageMeta(id, owner string, createdAt time.Time) {
+	imageCreatedAtCache.put(id, createdAt)
+	imageMetaCache.put(id, imageMeta{Owner: owner, MediaType: "image/jpeg", CreatedAt: createdAt})
+}
+
+// resetImageMetaCaches は /api/initialize で消えた画像の値を捨てる。どちらも DB から作り直せる値だけを持つ
+func resetImageMetaCaches() {
+	imageCreatedAtCache.reset()
+	imageMetaCache.reset()
 }
 
 type imageMetaQuery struct{ byID, byCreatedAt string }
@@ -355,6 +418,22 @@ func (c *boundedCache[V]) get(k string) (V, bool) {
 	defer c.mu.RUnlock()
 	v, ok := c.m[k]
 	return v, ok
+}
+
+func (c *boundedCache[V]) delete(k string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.m[k]; ok {
+		c.size -= c.sizeOf(v)
+		delete(c.m, k)
+	}
+}
+
+func (c *boundedCache[V]) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m = map[string]V{}
+	c.size = 0
 }
 
 func (c *boundedCache[V]) put(k string, v V) {

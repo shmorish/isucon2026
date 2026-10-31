@@ -162,7 +162,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		cacheUploadedImage(imageID, imageData)
-		imageCreatedAtCache.put(imageID, post.PostedAt)
+		rememberUploadedImageMeta(imageID, user.ID, post.PostedAt)
 		return c.JSON(http.StatusCreated, newPostResponse(post, user))
 	}
 }
