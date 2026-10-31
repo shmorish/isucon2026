@@ -34,6 +34,16 @@ func newRealMojiResponse(reaction RealMoji, user User) replaceRealMojiResponse {
 	return replaceRealMojiResponse{ID: reaction.ID, Reactor: newRelationshipUserResponse(user), ReactionType: reaction.ReactionType, ImageURL: signedImageURL(user, reaction.ImageID), CreatedAt: reaction.CreatedAt}
 }
 
+// 画像と RealMoji は同じ created_at（Go で1回取った時刻）で入れる。別々に clock_timestamp() を使うと数 ms ずれて、
+// imageCreatedAtLookupQuery が返す realmojis.created_at では画像が見つからず、全パーティションをロックする
+// id だけの検索に落ちる。レスポンスの createdAt は RETURNING で DB に入った値（マイクロ秒）を返す
+const (
+	replaceRealMojiImageQuery = `
+   WITH image AS (INSERT INTO image_objects(id,owner_user_id,data,media_type,created_at) VALUES($3,$2,$4,'image/jpeg',$5))
+   UPDATE realmojis SET replaced_at=clock_timestamp() WHERE post_id=$1 AND reactor_id=$2 AND replaced_at IS NULL AND deleted_at IS NULL`
+	createRealMojiQuery = `INSERT INTO realmojis(id,post_id,reactor_id,image_id,reaction_type,created_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING ` + realMojiColumns
+)
+
 func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		var input replaceRealMojiRequest
@@ -91,22 +101,21 @@ func replaceRealMojiHandler(h *HandlerContext) echo.HandlerFunc {
 			return NewAPIError(http.StatusForbidden, "interaction_forbidden")
 		}
 		imageID := uuid.NewString()
+		createdAt := time.Now().UTC()
 		// The new realmoji is inserted in a separate statement: in one statement the
 		// replacement UPDATE could run after it and hit realmojis_one_active.
-		if _, err := tx.ExecContext(ctx, `
-   WITH image AS (INSERT INTO image_objects(id,owner_user_id,data,media_type) VALUES($3,$2,$4,'image/jpeg'))
-   UPDATE realmojis SET replaced_at=clock_timestamp() WHERE post_id=$1 AND reactor_id=$2 AND replaced_at IS NULL AND deleted_at IS NULL
-  `, binaryImage, post.ID, actor, imageID, data); err != nil {
+		if _, err := tx.ExecContext(ctx, replaceRealMojiImageQuery, binaryImage, post.ID, actor, imageID, data, createdAt); err != nil {
 			return err
 		}
 		var reaction RealMoji
-		if err := tx.GetContext(ctx, &reaction, `INSERT INTO realmojis(id,post_id,reactor_id,image_id,reaction_type,created_at) VALUES($1,$2,$3,$4,$5,clock_timestamp()) RETURNING `+realMojiColumns, uuid.NewString(), post.ID, actor, imageID, input.ReactionType); err != nil {
+		if err := tx.GetContext(ctx, &reaction, createRealMojiQuery, uuid.NewString(), post.ID, actor, imageID, input.ReactionType, createdAt); err != nil {
 			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
 		cacheUploadedImage(imageID, data)
+		imageCreatedAtCache.put(imageID, reaction.CreatedAt)
 		return c.JSON(http.StatusCreated, newRealMojiResponse(reaction, viewer.User))
 	}
 }
