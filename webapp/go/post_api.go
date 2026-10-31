@@ -106,6 +106,8 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 			Deleted   int       `db:"deleted"`
 		}
 		err = tx.GetContext(ctx, &window, activeWindowWithPostCountsQuery, userID, user.Region)
+		// 重複に見えるが消さない。FOR SHARE で待つ間に投稿期間が終わると、READ COMMITTED の再確認で
+		// 行が外れて0行になる。次の文は新しいスナップショットで始まり、新しく開いた期間を見る。
 		if errors.Is(err, sql.ErrNoRows) {
 			err = tx.GetContext(ctx, &window, activeWindowWithPostCountsQuery, userID, user.Region)
 		}

@@ -45,7 +45,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 
 		ctx := c.Request().Context()
-		// 署名鍵と削除状態を1回で確認する（data は読まない）。即時反映も5秒以内の許容範囲に含まれる。
+		// 署名鍵と削除状態を1回で確認する。即時反映も5秒以内の許容範囲に含まれる。
 		var meta struct {
 			SecretKeyHash string    `db:"secret_key_hash"`
 			MediaType     string    `db:"media_type"`
