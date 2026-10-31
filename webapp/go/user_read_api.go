@@ -23,6 +23,8 @@ type searchUsersResponse struct {
 	HasMore bool                       `json:"hasMore"`
 }
 
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
 func normalizeSearchText(value string) string {
 	return norm.NFC.String(cases.Fold().String(norm.NFC.String(value)))
 }
@@ -46,9 +48,9 @@ func searchUsersHandler(h *HandlerContext) echo.HandlerFunc {
 		var users []User
 		if err := h.DB.SelectContext(ctx, &users, `SELECT `+strings.Join(userColumns, ", ")+` FROM users u
 			WHERE status='active' AND id<>$1 AND ($2='' OR (username,id)>($2,$3))
-			  AND (strpos(username, $4) > 0 OR strpos(display_name_search, $4) > 0)
+			  AND (username LIKE $4 OR display_name_search LIKE $4)
 			  AND NOT EXISTS (SELECT 1 FROM block_relations b WHERE (b.blocker_id=$1 AND b.blocked_id=u.id) OR (b.blocker_id=u.id AND b.blocked_id=$1))
-			ORDER BY username, id LIMIT 51`, viewer, input.BeforeUsername, input.BeforeID, query); err != nil {
+			ORDER BY username, id LIMIT 51`, viewer, input.BeforeUsername, input.BeforeID, "%"+likeEscaper.Replace(query)+"%"); err != nil {
 			return err
 		}
 		items := make([]relationshipUserResponse, 0, len(users))

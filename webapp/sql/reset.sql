@@ -10,6 +10,10 @@ CREATE INDEX IF NOT EXISTS posts_image_id ON posts(image_id);
 CREATE INDEX IF NOT EXISTS login_sessions_token_hash ON login_sessions(token_hash);
 CREATE INDEX IF NOT EXISTS login_sessions_user_id_active ON login_sessions(user_id) WHERE active;
 CREATE INDEX IF NOT EXISTS users_username ON users(username);
+-- User search matches substrings anywhere; without these it walks every user in username order (~4900 buffer hits per query)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS users_username_trgm ON users USING gin (username gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS users_display_name_search_trgm ON users USING gin (display_name_search gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS friendships_user_high_id ON friendships(user_high_id);
 CREATE INDEX IF NOT EXISTS block_relations_blocked_id ON block_relations(blocked_id);
 CREATE INDEX IF NOT EXISTS follows_followee_id ON follows(followee_id);
