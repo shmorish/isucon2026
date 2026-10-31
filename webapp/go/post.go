@@ -286,3 +286,31 @@ func getBlockedUserIDs(ctx context.Context, db sqlx.QueryerContext, userID strin
 	}
 	return blocked, nil
 }
+
+func lockUser(ctx context.Context, tx *sqlx.Tx, userID string) (User, error) {
+	var user User
+	err := tx.GetContext(ctx, &user, `SELECT `+strings.Join(userColumns, ", ")+` FROM users WHERE id = $1 FOR NO KEY UPDATE`, userID)
+	return user, err
+}
+
+// requireActive is not folded into lockUser's WHERE so handlers that read the user late keep their error precedence.
+func (user *User) requireActive() error {
+	if user.Status != "active" {
+		return sql.ErrNoRows
+	}
+	return user.setImageKey()
+}
+
+// Not merged into the users lock statement: the counts need a snapshot taken after that lock is granted.
+const activeWindowWithPostCountsQuery = `
+  WITH w AS (
+    SELECT id, local_date, starts_at FROM posting_windows WHERE region = $2 AND ended_at IS NULL FOR SHARE
+  )
+  SELECT w.id, w.local_date, w.starts_at, c.active, c.deleted
+  FROM w CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE p.deleted_at IS NULL) AS active,
+           count(*) FILTER (WHERE p.deleted_at IS NOT NULL) AS deleted
+    FROM posts p JOIN posting_windows pw ON pw.id = p.posting_window_id
+    WHERE p.author_id = $1 AND pw.local_date = w.local_date
+  ) c
+`
