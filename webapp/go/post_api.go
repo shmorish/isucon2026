@@ -106,10 +106,14 @@ const createPostQuery = `
   SELECT ` + postColumns + ` FROM p JOIN posting_windows w ON w.id = p.posting_window_id
 `
 
-// createPostLockSQL looks the session up and locks the user's row (FOR NO KEY UPDATE, like lockUser) in one statement.
+// createPostLockSQL looks the session up, locks the user's row (FOR NO KEY UPDATE, like lockUser) and then takes the
+// region's shared lockRegionPosts in one statement. The advisory lock is in the select list so it is taken only after
+// the row lock, keyed by the locked row's region (the one createPostQuery gets), and before createPostQuery's
+// snapshot, so that query sees a window the opener ended while this waited.
 var createPostLockSQL = `
   WITH ` + sessionCTE + `
-  SELECT ` + sessionSelect + `, u.* FROM sess CROSS JOIN LATERAL (
+  SELECT ` + sessionSelect + `, u.*, ` + regionPostsSharedLockExpr("u.region") + `::text AS region_posts_lock
+  FROM sess CROSS JOIN LATERAL (
     SELECT ` + strings.Join(userColumns, ", ") + ` FROM users WHERE id = sess.user_id FOR NO KEY UPDATE
   ) u
 `
@@ -132,6 +136,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 		var locked struct {
 			sessionColumns
 			User
+			RegionPostsLock string `db:"region_posts_lock"`
 		}
 		err = tx.GetContext(ctx, &locked, createPostLockSQL, foldedSessionTokenHash(c))
 		if err := foldedSessionResult(c, h, err, locked.sessionColumns); err != nil {

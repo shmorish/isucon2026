@@ -103,3 +103,34 @@ func TestRegionUsersLock(t *testing.T) {
 	requireGranted(t, registerDone)
 	requireGranted(t, deletionDone)
 }
+
+func TestRegionPostsLockQueuesPostsBehindOpener(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	post := beginTestTx(t, db)
+	if err := lockRegionPostsShared(ctx, post, "asia"); err != nil {
+		t.Fatal(err)
+	}
+	opener := beginTestTx(t, db)
+	openerDone := lockAsync(func() error { return lockRegionPosts(ctx, opener, "asia") })
+	requireBlocked(t, openerDone)
+
+	laterPost := beginTestTx(t, db)
+	laterPostDone := lockAsync(func() error { return lockRegionPostsShared(ctx, laterPost, "asia") })
+	otherRegionPost := beginTestTx(t, db)
+	requireGranted(t, lockAsync(func() error { return lockRegionPostsShared(ctx, otherRegionPost, "europe") }))
+	regionUsers := beginTestTx(t, db)
+	requireGranted(t, lockAsync(func() error { return lockRegionUsers(ctx, regionUsers, "asia") }))
+	requireBlocked(t, laterPostDone)
+
+	if err := post.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	requireGranted(t, openerDone)
+	requireBlocked(t, laterPostDone)
+	if err := opener.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	requireGranted(t, laterPostDone)
+}

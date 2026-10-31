@@ -73,6 +73,10 @@ func openPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
   `, region, windowID, startsAt); err != nil {
 			return err
 		}
+		// Not before the notifications INSERT: posts in the region queue behind this lock until commit.
+		if err := lockRegionPosts(ctx, tx, region); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE posting_windows SET ended_at = $2 WHERE region = $1 AND ended_at IS NULL`, region, startsAt); err != nil {
 			return err
 		}
