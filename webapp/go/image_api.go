@@ -67,9 +67,6 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		// 見せられないときは今までどおり image_objects を引く。消えた画像（差し替え前のプロフィール画像）と
 		// 削除された投稿の画像で、署名を確認する前に 403 にするか（abuse の記録の有無）が変わらないようにするため
 		known, hit := imageMetaCache.get(input.ImageID)
-		if !hit {
-			known, hit = lookupInitialImageMeta(input.ImageID)
-		}
 		checked := false
 		if hit && cached {
 			var owner imageOwnerRow
@@ -378,31 +375,18 @@ func fromLocalNginx(r *http.Request) bool {
 // 本体を読まずに、先頭と末尾の 8 バイトだけで completeImage と同じ判定をする。
 // nginx (www-data) が読めない 0600 のファイル（#76 より前に書いたもの）はアプリが今までどおり返す
 func imageAccelPath(id string) (string, bool) {
-	f, st, ok := openCompleteImageFile(id)
-	if !ok {
-		return "", false
-	}
-	f.Close()
-	if st.Mode().Perm()&0o004 == 0 {
-		return "", false
-	}
-	return "/_image_cache/" + id[:2] + "/" + id, true
-}
-
-// openCompleteImageFile は画像ファイルを開き、本体を読まずに先頭と末尾の 8 バイトだけで completeImage と同じ判定をする
-func openCompleteImageFile(id string) (*os.File, os.FileInfo, bool) {
 	path, ok := imageDiskPath(id)
 	if !ok {
-		return nil, nil, false
+		return "", false
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, false
+		return "", false
 	}
+	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() {
-		f.Close()
-		return nil, nil, false
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 {
+		return "", false
 	}
 	// PNG の先頭・末尾の印がどちらも 8 バイトなので、16 バイトあれば足りる
 	b := make([]byte, min(st.Size(), 16))
@@ -412,10 +396,9 @@ func openCompleteImageFile(id string) (*os.File, os.FileInfo, bool) {
 		_, err = f.ReadAt(b[8:], st.Size()-8)
 	}
 	if err != nil || !completeImage(b) {
-		f.Close()
-		return nil, nil, false
+		return "", false
 	}
-	return f, st, true
+	return "/_image_cache/" + id[:2] + "/" + id, true
 }
 
 var (

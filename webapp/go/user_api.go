@@ -94,13 +94,10 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		// Not folded into the lock statement: the existence check needs a snapshot taken after the username lock is granted.
 		var user User
-		userID := uuid.NewString()
-		// 検索の候補はコミット前に足す（余分な候補は検索の SQL が落とす。userSearchIndex）
-		userSearch.add(userID, input.Username, normalizeSearchText(input.DisplayName))
 		err = tx.GetContext(ctx, &user, `INSERT INTO users (id, username, secret_key_hash, display_name, region, display_name_search)
 			SELECT $1, $2::text, $3, $4, $5, $6 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = $2::text)
 			RETURNING `+strings.Join(userColumns, ", "),
-			userID, input.Username, sha256Hex(secretKey), input.DisplayName, input.Region, normalizeSearchText(input.DisplayName))
+			uuid.NewString(), input.Username, sha256Hex(secretKey), input.DisplayName, input.Region, normalizeSearchText(input.DisplayName))
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusConflict, "username_taken")
 		}
@@ -214,7 +211,6 @@ func updateMeHandler(h *HandlerContext) echo.HandlerFunc {
 			}
 		}
 		if input.DisplayName != nil {
-			userSearch.add(session.UserID, normalizeSearchText(*input.DisplayName))
 			if _, err := tx.ExecContext(ctx, `UPDATE users SET display_name = $2, display_name_search = $3, updated_at = clock_timestamp() WHERE id = $1`, session.UserID, *input.DisplayName, normalizeSearchText(*input.DisplayName)); err != nil {
 				return err
 			}
