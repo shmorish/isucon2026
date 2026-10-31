@@ -31,6 +31,7 @@ snippets/             nginx / MySQL / sysctl / Go のコピペ部品
 | `task deploy` | 1台だけサーバー上で反映するとき |
 | `./scripts/reboot-all.sh` | 大きな変更の後と終盤の再起動試験（手元から） |
 | `task analyze` | ベンチの後、毎回 s1〜s3 で（alp を集計）。DB は s4 で `task slp` と `task pgstat`（`/tmp/pgstat.txt`） |
+| `task pg-reload` | s4 の PostgreSQL の設定を手で反映するとき（再起動しない。再起動が要る設定は `pending_restart` と表示）。`task deploy` も同じ判断で、reload で済まないときだけ再起動する |
 | `task score S=点数 M="メモ"` | ポータルで結果を見た後、毎回（s1 の `~/scores.log` に記録） |
 | `task pprof` | ベンチ開始の直前（手元のブラウザで localhost:1080） |
 | `task monitor` | ベンチ開始の直前（CPU・メモリを記録して `/tmp/resource.txt` に要約）。3台同時に取るときは下の「計測付きベンチ」の手元コマンドを使う |
@@ -216,7 +217,7 @@ git add -A && git commit -m "計測を入れる" && git push
 task deploy
 ```
 
-`task deploy` は、設定のコピー → ビルド → 再起動（nginx は先に `nginx -t` で文法チェック）→ ログを空にする、までを行う。計測が動いているかを3つとも確認する。
+`task deploy` は、設定のコピー → ビルド → 再起動（nginx は先に `nginx -t` で文法チェック。PostgreSQL は設定が変わったときだけ reload し、`pending_restart` の設定があるときだけ再起動）→ ログと pg_stat_statements を空にする、までを行う。計測が動いているかを3つとも確認する。
 
 ```
 curl -s -o /dev/null localhost/ ; sudo tail -1 /var/log/nginx/access.log
@@ -255,7 +256,7 @@ task analyze
 task score S=<点数> M="計測あり"
 ```
 
-`task analyze`（s1〜s3）は alp の結果をターミナルに出し、`/tmp/alp.txt` にも保存する。DB のクエリ別の集計は s4 で `task slp` を実行し、`/tmp/slp.txt` に保存される（Claude にはこのファイルを読ませる）。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
+`task analyze`（s1〜s3）は alp の結果をターミナルに出し、`/tmp/alp.txt` にも保存する。DB のクエリ別の集計は s4 で `task slp`（10ms 以上のクエリのログ、`/tmp/slp.txt`）と `task pgstat`（全クエリ、`/tmp/pgstat.txt`）を実行する（Claude にはこれらのファイルを読ませる）。pprof の結果は手元のブラウザで http://localhost:1080 を開くと見られる。
 
 ID を含む URL（`/api/user/123` など）が別々の行に分かれていたら、`scripts/alp-groups.txt` に正規表現を1行足して集計し直す。ログは次の `task deploy` まで残っているので、ベンチを回し直す必要はない。
 
@@ -267,7 +268,7 @@ task alp
 **結果の読み方**
 
 - **alp**: `SUM`（合計時間）の大きい順。上から5つが改善の候補。`COUNT` が多いのに `AVG` が小さいものは、キャッシュや静的配信の候補
-- **slp**（`scripts/pgslow.py`）: クエリを合計時間の大きい順に並べた表。まずここで上位5つを見る。平均が大きいものは `EXPLAIN` でインデックスを確かめ、`FOR UPDATE` や `LOCK` ならロック待ちを疑う。`count` が異常に多いものは N+1 の可能性が高い
+- **slp**（`scripts/pgslow.py`）: 10ms 以上かかったクエリを合計時間の大きい順に並べた表（`log_min_duration_statement = 10`）。速いクエリは数えないので、呼び出し回数や N+1 は pgstat の `calls` で見る。平均が大きいものは `EXPLAIN` でインデックスを確かめ、`FOR UPDATE` や `LOCK` ならロック待ちを疑う。ロック待ちのログ（`log_lock_waits`）は `sudo grep 'still waiting' /var/log/postgresql/postgresql-16-main.log`
 - **pprof**: `Top` 表示で、アプリの CPU を使っている関数を確認する。DB 待ちが長い場合は、ここではあまり目立たない
 - **CPU・メモリ（`task monitor`）**: サーバーごとに、全体の CPU 使用率・iowait・メモリと、プロセス別の CPU（100% = 1コア分）が出る
   - 全体の CPU が張り付いている（80% 以上）: いちばん使っているプロセスがボトルネック。mysqld ならクエリ・インデックスの改善か DB の別サーバー化、アプリなら pprof で重い関数を探すか台数を増やす、nginx なら静的配信・gzip・keepalive を見直す
@@ -290,7 +291,7 @@ task alp
 - [ ] DB のバックアップ（`~/backup.sql.gz`）がある
 - [ ] Go 版でベンチが通り、初期スコアを `task score` で記録した
 - [ ] アクセスログが JSON で1本だけ出ている
-- [ ] スロークエリログが全件出ている
+- [ ] スロークエリログ（10ms 以上）が出ていて、`task pgstat` が通る
 - [ ] pprof が取れる
 - [ ] `task analyze` の結果をチームで見て、担当を決めた
 
@@ -310,7 +311,7 @@ task alp
 
 ## 終盤（17:00〜18:00）
 
-- `access_log off;`、s4 の PostgreSQL 計測を止める（`conf.d/zz-isu.conf` を `log_min_duration_statement = -1`、`conf.d/90-measure.conf` を `pg_stat_statements.track = none`・`track_io_timing = off`・`log_lock_waits = off`。ファイルは消さずに値を変える）、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止
+- `access_log off;`、s4 の PostgreSQL 計測を止める（`conf.d/zz-isu.conf` を `log_min_duration_statement = -1`、`conf.d/90-measure.conf` を `pg_stat_statements.track = none`・`track_io_timing = off`・`log_lock_waits = off`。どれも `task deploy` の reload で反映され、PostgreSQL は再起動しない。ファイルは消さずに値を変える）、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止
 - `snippets/mysql-isu.cnf` の耐久性設定が入っていることを確認
 - `./scripts/reboot-all.sh` で全台再起動 → ベンチが通るか確認 → **ブラウザで画面を確認**
 - 残り30分でコード凍結

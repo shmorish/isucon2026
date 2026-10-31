@@ -1,4 +1,4 @@
-# PostgreSQL の log_min_duration_statement = 0 のログをクエリ別に集計する (task slp から呼ぶ)
+# PostgreSQL の log_min_duration_statement のログをクエリ別に集計する (task slp から呼ぶ)。閾値未満のクエリは数えないので、件数の合計は task pgstat を見る
 # slp pg は pgx のプリペアドステートメント (execute stmtcache_...) を読めないので自前で集計する
 
 import re, sys, collections
