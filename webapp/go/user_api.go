@@ -89,6 +89,9 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
+		if err := lockRegionUsersShared(ctx, tx, input.Region); err != nil {
+			return err
+		}
 		// ユーザー名が一意である必要があります。
 		if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 			return err
@@ -207,6 +210,11 @@ func updateMeHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		defer tx.Rollback()
+		if input.Region != nil {
+			if err := lockAllRegionUsersShared(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if input.DisplayName != nil {
 			if _, err := tx.ExecContext(ctx, `UPDATE users SET display_name = $2, updated_at = clock_timestamp() WHERE id = $1`, session.UserID, *input.DisplayName); err != nil {
 				return err
