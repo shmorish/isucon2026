@@ -146,6 +146,7 @@ func createPostHandler(h *HandlerContext) echo.HandlerFunc {
 	}
 }
 
+// 署名する画像を変えたら appendImagesToSign の呼び出し側も揃える
 func newPostResponse(post Post, user User) createPostResponse {
 	response := createPostResponse{
 		ID: post.ID,

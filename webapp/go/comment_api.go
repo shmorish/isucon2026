@@ -23,6 +23,7 @@ type createCommentResponse struct {
 	CreatedAt time.Time                `json:"createdAt"`
 }
 
+// 署名する画像を変えたら appendImagesToSign の呼び出し側も揃える
 func newCommentResponse(comment Comment, user User) createCommentResponse {
 	return createCommentResponse{ID: comment.ID, Author: newRelationshipUserResponse(user), Body: comment.Body, CreatedAt: comment.CreatedAt}
 }

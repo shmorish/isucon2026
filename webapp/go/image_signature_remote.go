@@ -43,7 +43,8 @@ type imageToSign struct {
 	imageID string
 }
 
-// imageID の画像と user のプロフィール画像を、user の鍵で署名する対象に加える
+// imageID の画像と user のプロフィール画像を、user の鍵で署名する対象に加える。
+// 対象は newPostResponse・newRealMojiResponse・newCommentResponse が署名する画像と揃える（ずれても手元で計算するだけで URL は同じ）
 func appendImagesToSign(dst []imageToSign, user User, imageIDs ...string) []imageToSign {
 	for _, id := range imageIDs {
 		dst = append(dst, imageToSign{user.ImageKey, id})

@@ -29,6 +29,7 @@ type replaceRealMojiResponse struct {
 	CreatedAt    time.Time                `json:"createdAt"`
 }
 
+// 署名する画像を変えたら appendImagesToSign の呼び出し側も揃える
 func newRealMojiResponse(reaction RealMoji, user User) replaceRealMojiResponse {
 	return replaceRealMojiResponse{ID: reaction.ID, Reactor: newRelationshipUserResponse(user), ReactionType: reaction.ReactionType, ImageURL: signedImageURL(user, reaction.ImageID), CreatedAt: reaction.CreatedAt}
 }
