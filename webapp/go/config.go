@@ -35,7 +35,8 @@ func (c *Config) DatabaseDSN() string {
 		Host:   net.JoinHostPort(c.DBHost, c.DBPort),
 		Path:   "/" + c.DBName,
 		// DB is ~100ms away from s2/s3; skip the per-connection prepare round trip (#21)
-		RawQuery: "default_query_exec_mode=exec",
+		// No TLS: the manual does not ask for it, and the connection still goes through the router (#60)
+		RawQuery: "default_query_exec_mode=exec&sslmode=disable",
 	}
 	return u.String()
 }
