@@ -2,6 +2,7 @@ package isureal
 
 import (
 	"os"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/labstack/echo/v5"
@@ -34,7 +35,13 @@ func NewServer(config *Config) *echo.Echo {
 	}
 	db.SetMaxOpenConns(30)
 	db.SetMaxIdleConns(30)
-	err = db.Ping()
+	// 全台再起動で DB (s4) より先に起動しても落ちないよう、最大60秒待つ
+	for i := 0; i < 60; i++ {
+		if err = db.Ping(); err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 	if err != nil {
 		panic("failed to ping database: " + err.Error())
 	}
