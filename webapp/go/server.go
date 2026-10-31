@@ -75,10 +75,9 @@ func NewServer(config *Config) *echo.Echo {
 	notifyDB.SetMaxOpenConns(notifyPoolSize)
 	notifyDB.SetMaxIdleConns(notifyPoolSize)
 	handlerContext.NotifyDB = notifyDB
-	handlerContext.Notifications = newNotificationHub(notifyDB, e.Logger)
-	// 投稿期間の開始（管理者）も専用の接続を使う。プール待ちで開始がタイムアウトすると、その期間の全員が投稿できない
 	notifyContext := *handlerContext
 	notifyContext.DB = notifyDB
+	handlerContext.Notifications = newNotificationHub(notifyDB, e.Logger)
 	go handlerContext.Notifications.run()
 	go handlerContext.IPBans.run(db, e.Logger)
 	e.Use(IPBanMiddleware(handlerContext))
@@ -125,7 +124,7 @@ func NewServer(config *Config) *echo.Echo {
 	e.POST("/api/admin/auth/logout", adminLogoutHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 	e.PUT("/api/admin/users/:userId/certification", certifyUserHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 	e.DELETE("/api/admin/users/:userId/certification", deleteUserCertificationHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
-	e.POST("/api/admin/posting-window", openPostingWindowHandler(&notifyContext), AdminSessionMiddleware(&notifyContext, true))
+	e.POST("/api/admin/posting-window", openPostingWindowHandler(handlerContext), AdminSessionMiddleware(handlerContext, true))
 
 	return e
 }
