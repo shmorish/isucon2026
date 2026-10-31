@@ -167,23 +167,32 @@ type getMyCurrentPostResponse createPostResponse
 func getMyCurrentPostHandler(h *HandlerContext) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		ctx := c.Request().Context()
-		userID := GetSession(c).UserID
-		var postID string
-		err := h.DB.GetContext(ctx, &postID, `
-   SELECT p.id FROM posts p
-   JOIN posting_windows w ON w.id = p.posting_window_id
-   JOIN users u ON u.id = p.author_id
-   JOIN posting_windows current ON current.region = u.region AND current.ended_at IS NULL
-                              AND current.local_date = w.local_date
-   WHERE p.author_id = $1 AND p.deleted_at IS NULL
-  `, userID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return NewAPIError(http.StatusNotFound, "post_not_found")
+		var row struct {
+			sessionColumns
+			PostID *string `db:"post_id"`
 		}
-		if err != nil {
+		err := h.DB.GetContext(ctx, &row, `
+   WITH `+sessionCTE+`
+   SELECT `+sessionSelect+`, mine.id AS post_id FROM sess LEFT JOIN LATERAL (
+     SELECT p.id FROM posts p
+     JOIN posting_windows w ON w.id = p.posting_window_id
+     JOIN users u ON u.id = p.author_id
+     JOIN posting_windows current ON current.region = u.region AND current.ended_at IS NULL
+                                AND current.local_date = w.local_date
+     WHERE p.author_id = sess.user_id AND p.deleted_at IS NULL
+   ) mine ON true
+  `, foldedSessionTokenHash(c))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		post, err := getPost(ctx, h.DB, postID)
+		if err := acceptFoldedSession(c, h, err == nil, row.sessionColumns); err != nil {
+			return err
+		}
+		if row.PostID == nil {
+			return NewAPIError(http.StatusNotFound, "post_not_found")
+		}
+		userID := row.SessUserID
+		post, err := getPost(ctx, h.DB, *row.PostID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return NewAPIError(http.StatusNotFound, "post_not_found")
 		}
