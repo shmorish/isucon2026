@@ -52,12 +52,15 @@ func imageSignature(key []byte, imageID string, exp int64) []byte {
 
 func computeImageSignature(key []byte, imageID string, exp int64) []byte {
 	value := []byte(strconv.FormatInt(exp, 10) + ":" + imageID)
+	// Reset reuses the precomputed ipad/opad states: half the SHA-256 blocks per round and no per-round allocs (#41)
+	mac := hmac.New(sha256.New, key)
+	var buf [sha256.Size]byte
 	for range imageSignatureIterations {
-		mac := hmac.New(sha256.New, key)
+		mac.Reset()
 		mac.Write(value)
-		value = mac.Sum(nil)
+		value = mac.Sum(buf[:0])
 	}
-	return value
+	return append([]byte(nil), value...)
 }
 
 func signedImageURL(user User, imageID string) string {
