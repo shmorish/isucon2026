@@ -53,7 +53,9 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		ranked := input.Feed == "friends-of-friends"
 		ctx := c.Request().Context()
-		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c))
+		// Only the friends-of-friends feed needs every friend-of-friend edge (candidates and scores). The other feeds
+		// read the light viewer and load the edges of the authors canView needs them for (none for friends and public).
+		row, err := selectViewerContextBySession(ctx, h.DB, foldedSessionTokenHash(c), ranked)
 		if err := foldedSessionResult(c, h, err, row.sessionColumns); err != nil {
 			return err
 		}
@@ -87,6 +89,15 @@ func getFeedHandler(h *HandlerContext) echo.HandlerFunc {
   `, append([]any{viewer.ID, beforePostedAt, beforeID}, feedArgs...)...)
 		if err != nil {
 			return err
+		}
+		if !ranked {
+			needed := make([]Post, 0, len(posts))
+			for _, post := range posts {
+				needed = append(needed, post.Post)
+			}
+			if err := viewer.addFriendsOfFriendsOf(ctx, h.DB, needed...); err != nil {
+				return err
+			}
 		}
 		candidates := make([]PostWithAuthor, 0)
 		for _, post := range posts {

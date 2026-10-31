@@ -70,3 +70,33 @@ func TestFeedCandidateFilterKeepsEveryVisibleFeedPost(t *testing.T) {
 		}
 	}
 }
+
+// A light viewer plus the edges addFriendsOfFriendsOf selects (author on one side, a friend on the other) must
+// decide canView and canComment exactly as the full viewer does.
+func TestLightViewerWithAuthorEdgesMatchesFullViewer(t *testing.T) {
+	friendships := [][2]string{{"f1", "v"}, {"f2", "v"}, {"f1", "ff1"}, {"ff2", "f2"}, {"ff1", "x"}, {"b", "f1"}, {"f1", "f2"}}
+	friends := map[string]bool{"f1": true, "f2": true}
+	newViewer := func() viewerContext {
+		return viewerContext{User: User{ID: "v"}, HasPostedToday: true, Friends: friends, FriendsOfFriends: map[string]bool{}, MutualFriends: map[string]int{}, Blocked: map[string]bool{"b": true}}
+	}
+	full := newViewer()
+	full.addFriendFriendships(friendships)
+	for _, author := range []string{"v", "f1", "f2", "ff1", "ff2", "x", "b"} {
+		for _, visibility := range []string{"public", "friends", "friends_of_friends", "other"} {
+			post := Post{AuthorID: author, Visibility: visibility}
+			light := newViewer()
+			if light.needsFriendsOfFriends(post) {
+				var edges [][2]string
+				for _, f := range friendships {
+					if (f[0] == author && friends[f[1]]) || (f[1] == author && friends[f[0]]) {
+						edges = append(edges, f)
+					}
+				}
+				light.addFriendFriendships(edges)
+			}
+			if light.canView(post) != full.canView(post) || light.canComment(post) != full.canComment(post) {
+				t.Errorf("post by %s (%s): light %v/%v, full %v/%v", author, visibility, light.canView(post), light.canComment(post), full.canView(post), full.canComment(post))
+			}
+		}
+	}
+}

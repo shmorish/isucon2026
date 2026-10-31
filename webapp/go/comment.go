@@ -85,6 +85,9 @@ func beginTxWithPost(ctx context.Context, db *sqlx.DB, postID string) (*sqlx.Tx,
 // loadPostAndViewerTx returns what loadPostAndViewer returns, but inside a
 // transaction and in one statement instead of two. found is false when
 // either the post or the viewer is missing.
+// It keeps the full viewer context (viewerContextQuery): comments and
+// RealMojis are written at most a few times per window, so the light one
+// would save little here.
 func loadPostAndViewerTx(ctx context.Context, tx *sqlx.Tx, viewerID, postID string) (post PostWithAuthor, viewer viewerContext, found bool, err error) {
 	var row struct {
 		PostWithAuthor
