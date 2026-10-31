@@ -52,7 +52,7 @@ func exportPostsHandler(h *HandlerContext) echo.HandlerFunc {
 		requested := make(map[string]struct{}, len(posts))
 		var missing []Post
 		for _, post := range posts {
-			if data, ok := imageDataCache.get(post.ImageID); ok {
+			if data, ok := getImageData(post.ImageID); ok {
 				images[post.ImageID] = data
 			} else if _, ok := requested[post.ImageID]; !ok {
 				requested[post.ImageID] = struct{}{}
@@ -182,7 +182,7 @@ func fetchExportImages(ctx context.Context, db *sqlx.DB, posts []Post) (map[stri
 		}
 		for _, r := range rows {
 			images[r.ID] = r.Data
-			imageDataCache.put(r.ID, r.Data)
+			putImageData(r.ID, r.Data)
 		}
 		missing = slices.DeleteFunc(missing, func(id string) bool { _, ok := images[id]; return ok })
 		return nil

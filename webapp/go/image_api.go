@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -55,7 +57,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
 		// 持っていなければ同じ問い合わせで data も読む
-		data, cached := imageDataCache.get(input.ImageID)
+		data, cached := getImageData(input.ImageID)
 		q := imageMetaQueryWithData
 		if cached {
 			q = imageMetaQueryMetaOnly
@@ -88,7 +90,7 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		if !cached {
 			data = meta.Data
-			imageDataCache.put(input.ImageID, data)
+			putImageData(input.ImageID, data)
 		}
 		if exp <= time.Now().Unix() {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
@@ -168,7 +170,77 @@ func init() {
 // アップロードを受けたサーバーでは、コミットが成功してから DB に書いたのと同じバイト列を入れる。
 // io.ReadAll の余った容量まで抱えないようにコピーする
 func cacheUploadedImage(id string, data []byte) {
-	imageDataCache.put(id, bytes.Clone(data))
+	putImageData(id, bytes.Clone(data))
+}
+
+// 画像本体はディスクにも持つ（#65）。本体は作成後に変わらず id も使い回されないので古くならない。
+// 見てよいか・削除済みかは毎回 DB で判定するので、/initialize で消えた画像のファイルが残っても 403 になる。
+// ponytail: ファイルは消さない（ベンチ1回で約 700MB 増える。ディスクの空きは 34GB）。足りなくなったら initialize で掃除する
+var imageDiskCacheDir = envOrDefault("ISUREAL_IMAGE_CACHE_DIR", "/home/isucon/image-cache")
+
+// id は URL から来るので、UUID の形のものだけファイルにする（パスの細工を防ぐ）
+var imageIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func imageDiskPath(id string) (string, bool) {
+	if !imageIDPattern.MatchString(id) {
+		return "", false
+	}
+	return filepath.Join(imageDiskCacheDir, id[:2], id), true
+}
+
+// getImageData はメモリ、なければディスクから画像本体を返す
+func getImageData(id string) ([]byte, bool) {
+	if data, ok := imageDataCache.get(id); ok {
+		return data, true
+	}
+	path, ok := imageDiskPath(id)
+	if !ok {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	imageDataCache.put(id, data)
+	return data, true
+}
+
+// putImageData は DB から読んだ（またはコミット済みの）画像本体をメモリに入れ、裏でディスクに書く
+func putImageData(id string, data []byte) {
+	imageDataCache.put(id, data)
+	go writeImageFile(id, data)
+}
+
+// 一時ファイルに書いて fsync してから rename するので、途中で落ちても中途半端なファイルは残らない
+func writeImageFile(id string, data []byte) {
+	path, ok := imageDiskPath(id)
+	if !ok {
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return
+	}
+	_, err = tmp.Write(data)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
 }
 
 var imageDataCache = newBoundedCache(imageDataCacheMaxBytes, func(v []byte) int { return len(v) })
