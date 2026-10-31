@@ -87,6 +87,25 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 				imageVisibility.put(input.ImageID, visibleImage{SecretKeyHash: owner.SecretKeyHash, Owner: known.Owner, MediaType: known.MediaType, CreatedAt: known.CreatedAt}, visibilityGen)
 			}
 		}
+		// 覚えていない画像でも本体が手元にあれば、image_objects と created_at の逆引き（パーティション 59 個でプラン作成が
+		// 重く、負荷中は平均 9ms）を引かずに、参照元の行から所有者と見せてよいかを1本で決める（#90）。
+		// アプリが入れる画像の所有者は参照元のユーザー（投稿者・RealMoji を付けた人・プロフィールの本人）で、初期データも
+		// 食い違う行が 0 件・media_type は image/jpeg だけ（s4 で確認）なので、行があれば byID/byCreatedAt と同じ判定になる。
+		// 行がなければ今までどおり image_objects を引く。消えた画像・削除された投稿の画像で、署名を確認する前に 403 にするか
+		// （abuse の記録の有無）を変えないため
+		if !checked && !hit && cached && imageReferrerLookupEnabled {
+			var owner imageReferrerRow
+			err = h.DB.GetContext(ctx, &owner, imageReferrerQuery, input.ImageID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				// CreatedAt は分からないので入れない（見せてよいと決まった後は使わない）。imageMetaCache にも入れない
+				meta = imageMetaRow{SecretKeyHash: owner.SecretKeyHash, OwnerUserID: owner.ID, MediaType: "image/jpeg", Visible: true}
+				checked = true
+				imageVisibility.put(input.ImageID, visibleImage{SecretKeyHash: owner.SecretKeyHash, Owner: owner.ID, MediaType: "image/jpeg"}, visibilityGen)
+			}
+		}
 		if !checked {
 			q := imageMetaQueryWithData
 			if cached {
@@ -189,6 +208,29 @@ func imageMetaSelect(cols string) string {
 var imageOwnerQuery = `
    SELECT u.secret_key_hash, ` + imageVisibleExpr("$1") + `
    FROM users u WHERE u.id = $2 AND u.status = 'active'`
+
+// imageReferrerQuery は $1 の画像を見せてよい参照元があれば、その所有者（参照元のユーザー）の行を1件返す。
+// 各枝の条件は imageVisibleExpr と同じで、所有者 = 参照元のユーザーとしたもの（#90）
+const imageReferrerQuery = `
+   SELECT u.id, u.secret_key_hash FROM users u WHERE u.profile_image_id = $1 AND u.status = 'active'
+   UNION ALL
+   SELECT u.id, u.secret_key_hash FROM posts p JOIN users u ON u.id = p.author_id AND u.status = 'active'
+    WHERE p.image_id = $1 AND p.deleted_at IS NULL
+   UNION ALL
+   SELECT u.id, u.secret_key_hash FROM realmojis r
+     JOIN posts p ON p.id = r.post_id AND p.deleted_at IS NULL
+     JOIN users author ON author.id = p.author_id AND author.status = 'active'
+     JOIN users u ON u.id = r.reactor_id AND u.status = 'active'
+    WHERE r.image_id = $1 AND r.replaced_at IS NULL AND r.deleted_at IS NULL
+   LIMIT 1`
+
+// テストで今までの経路（image_objects を引く）と比べるときだけ false にする
+var imageReferrerLookupEnabled = true
+
+type imageReferrerRow struct {
+	ID            string `db:"id"`
+	SecretKeyHash string `db:"secret_key_hash"`
+}
 
 type imageOwnerRow struct {
 	SecretKeyHash string `db:"secret_key_hash"`
