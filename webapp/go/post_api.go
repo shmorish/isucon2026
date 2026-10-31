@@ -171,6 +171,7 @@ func getMyCurrentPostHandler(h *HandlerContext) echo.HandlerFunc {
 			sessionColumns
 			PostID *string `db:"post_id"`
 		}
+		// "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 		err := h.DB.GetContext(ctx, &row, `
    WITH `+sessionCTE+`
    SELECT `+sessionSelect+`, mine.id AS post_id FROM sess LEFT JOIN LATERAL (
@@ -331,6 +332,7 @@ func deletePostHandler(h *HandlerContext) echo.HandlerFunc {
 			AuthorID  string `db:"author_id"`
 			Deletions int    `db:"deletions"`
 		}
+		// "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 		err = tx.GetContext(ctx, &target, `
    WITH target AS (
      SELECT p.id, p.author_id, (

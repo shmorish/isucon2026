@@ -133,6 +133,7 @@ var viewerContextQuery = viewerContextSQL("", "$1", "", "")
 // sess and me use the same active-user conditions, so a valid session always has its me row.
 var viewerContextBySessionQuery = viewerContextSQL(sessionCTE+", ", "(SELECT user_id FROM sess)", sessionSelect+", ", "sess, ")
 
+// "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 func viewerContextSQL(with, viewerID, extraColumns, extraFrom string) string {
 	return `
   WITH ` + with + `me AS (
@@ -329,6 +330,7 @@ func (user *User) requireActive() error {
 }
 
 // Not merged into the users lock statement: the counts need a snapshot taken after that lock is granted.
+// "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 const activeWindowWithPostCountsQuery = `
   WITH w AS (
     SELECT id, local_date, starts_at FROM posting_windows WHERE region = $2 AND ended_at IS NULL FOR SHARE

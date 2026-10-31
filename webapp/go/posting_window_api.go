@@ -36,6 +36,7 @@ func getCurrentPostingWindowHandler(h *HandlerContext) echo.HandlerFunc {
 			Active         *int       `db:"active"`
 			Deleted        *int       `db:"deleted"`
 		}
+		// "Posted today" means a post in any window sharing the local_date, regardless of region. The same rule is spelled out separately (not shared, to keep each query plan) in viewerContextSQL, activeWindowWithPostCountsQuery, getMyCurrentPostHandler, getCurrentPostingWindowHandler and deletePostHandler; change them together.
 		err := h.DB.GetContext(c.Request().Context(), &state, `
    WITH `+sessionCTE+`
    SELECT `+sessionSelect+`, st.* FROM sess LEFT JOIN LATERAL (
