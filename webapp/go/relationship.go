@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -80,21 +79,6 @@ func isBlocked(ctx context.Context, db sqlx.QueryerContext, actor, target string
 	var blocked bool
 	err := sqlx.GetContext(ctx, db, &blocked, `SELECT EXISTS(SELECT 1 FROM block_relations WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1))`, actor, target)
 	return blocked, err
-}
-
-// acceptFriendRequest は申請を承認済みにして友達関係を作り、更新後の申請を返す（1往復）
-func acceptFriendRequest(ctx context.Context, tx *sqlx.Tx, requestID, userA, userB string) (FriendRequest, error) {
-	var request FriendRequest
-	err := tx.GetContext(ctx, &request, `
-  WITH r AS (
-   UPDATE friend_requests SET status='accepted', updated_at=clock_timestamp() WHERE id=$1
-   RETURNING id, requester_id, recipient_id, status, created_at, updated_at
-  ), f AS (
-   INSERT INTO friendships (id, user_low_id, user_high_id, source_request_id) VALUES ($2, $3, $4, $1)
-  )
-  SELECT * FROM r
- `, requestID, uuid.NewString(), min(userA, userB), max(userA, userB))
-	return request, err
 }
 
 func requireRelationshipChange(result sql.Result, err error, status int, code string) error {
