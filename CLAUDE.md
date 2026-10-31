@@ -26,6 +26,7 @@
 2. 直前のベンチの計測結果を読む
    - `ssh s1 cat /tmp/alp.txt`（エンドポイント別の合計時間。s2・s3 も同様）
    - `ssh s4 cat /tmp/slp.txt`（クエリ別の合計時間。DB は s4）
+   - `ssh s4 cat /tmp/pgstat.txt`（pg_stat_statements。クエリ別の calls、平均、1回あたりの行数、キャッシュヒット率）
    - `cat /tmp/resource-s*.txt`（サーバー別・プロセス別の CPU とメモリ。手元に保存されている）
    - `ssh s1 cat ~/scores.log`（スコアの推移とそのときのコミット）
 3. いちばん効果が大きそうな変更を**1つだけ**選び、理由を数字で説明する
@@ -50,7 +51,7 @@
 for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & done; wait; cat /tmp/resource-s*.txt
 ```
 
-ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'`（s2・s3 も）と `ssh s4 'cd ~ && task slp'` を実行して結果を読む。
+ベンチ後に頼まれたら `ssh s1 'cd ~ && task analyze'`（s2・s3 も）と `ssh s4 'cd ~ && task slp && task pgstat'` を実行して結果を読む。
 
 ## DB の操作
 
@@ -90,6 +91,7 @@ for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & don
 
 - **alp**: `SUM` の大きい順が改善の候補。`COUNT` が多く `AVG` が小さいものはキャッシュや静的配信の候補
 - **slp**: `SUM(QUERYTIME)` の上位から。`AVG(ROWSEXAMINED)` が `AVG(ROWSSENT)` より桁違いに大きければインデックス不足。`COUNT` が異常に多ければ N+1
+- **pgstat**: `%` の上位から。`hit_pct` が低く `read_s` が大きければディスク読み、`temp_blks` が 0 でなければ `work_mem` 不足。`FOR UPDATE` や `LOCK TABLE` の `mean_ms` が大きければロック待ち
 - **CPU・メモリ**:
   - 全体の CPU が 80% 以上で張り付き → いちばん使っているプロセスが原因（mysqld ならクエリ改善か DB 分離、アプリなら pprof で関数を特定するか台数を増やす）
   - CPU に余裕があるのにスコアが伸びない → 待ちが原因（ロック、外部 API、sleep やリトライ間隔、`MaxOpenConns`、スコア計算式の制約）
@@ -117,5 +119,5 @@ for h in s1 s2 s3; do ssh $h 'cd ~ && task monitor' > /tmp/resource-$h.txt & don
 
 - **〜12:00**: 計測を入れ、インデックス・N+1・接続設定など確実な改善を積む。DB の分離を決める
 - **12:00〜17:00**: 1サイクル1変更で改善を繰り返す
-- **17:00〜**: 新しい改善はしない。ログと計測を止める（nginx `access_log off;`、`slow_query_log = 0`、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止）、`snippets/mysql-isu.cnf` の耐久性設定を入れる
+- **17:00〜**: 新しい改善はしない。ログと計測を止める（nginx `access_log off;`、s4 の `conf.d/zz-isu.conf` を `log_min_duration_statement = -1`、`conf.d/90-measure.conf` を `pg_stat_statements.track = none`・`track_io_timing = off`・`log_lock_waits = off`（ファイルは消さずに値を変える。deploy は消したファイルを /etc から消さない）、アプリの systemd に `Environment=NO_PPROF=1`、アプリのロガー停止）、`snippets/mysql-isu.cnf` の耐久性設定を入れる
 - **17:30〜**: コードを凍結する。人間の指示で `./scripts/reboot-all.sh` を実行し、人間がベンチとブラウザ確認を行う。頼まれた確認作業以外はしない
