@@ -17,7 +17,6 @@ type HandlerContext struct {
 	Config        *Config
 	IPBans        *IPBanList
 	Notifications *notificationHub
-	NotifyDB      *sqlx.DB
 }
 
 // s1 (asia) は全リージョンの /api を処理するので 60。150 にした 14:35 のベンチ (#58 のコメント) では、460KB の画像を
@@ -30,8 +29,6 @@ func dbPoolSize(region string) int {
 	}
 	return 10
 }
-
-const notifyPoolSize = 8
 
 func NewServer(config *Config) *echo.Echo {
 	if !validRegion(config.Region) {
@@ -69,15 +66,7 @@ func NewServer(config *Config) *echo.Echo {
 		Config: config,
 		IPBans: &IPBanList{},
 	}
-	// 通知の購読（セッションの確認）と 200ms ごとのポーリングは専用の接続を使う。120 本のプールが埋まる最終日に、
-	// 購読がプール待ちで返らずルーターが 503 を返し、購読できなかった利用者は最終日の通知を受け取れなかった
-	notifyDB := sqlx.NewDb(stdlib.OpenDB(*pgxConfig, stdlib.OptionShouldPing(shouldPingIdleConn)), "pgx")
-	notifyDB.SetMaxOpenConns(notifyPoolSize)
-	notifyDB.SetMaxIdleConns(notifyPoolSize)
-	handlerContext.NotifyDB = notifyDB
-	notifyContext := *handlerContext
-	notifyContext.DB = notifyDB
-	handlerContext.Notifications = newNotificationHub(notifyDB, e.Logger)
+	handlerContext.Notifications = newNotificationHub(db, e.Logger)
 	go handlerContext.Notifications.run()
 	go handlerContext.IPBans.run(db, e.Logger)
 	e.Use(IPBanMiddleware(handlerContext))
@@ -111,7 +100,7 @@ func NewServer(config *Config) *echo.Echo {
 	e.DELETE("/api/realmojis/:realMojiId", deleteRealMojiHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.GET("/api/images/:imageId", getImageHandler(handlerContext))
 	e.POST("/api/internal/image-signatures", signImagesHandler)
-	e.GET("/api/notifications", getNotificationsHandler(handlerContext), SessionMiddleware(&notifyContext, true), RegionMiddleware(handlerContext))
+	e.GET("/api/notifications", getNotificationsHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.POST("/api/friend-requests", createFriendRequestHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.POST("/api/friend-requests/:requestId/:action", transitionFriendRequestHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
 	e.GET("/api/relationships/:kind", getRelationshipsHandler(handlerContext), SessionMiddleware(handlerContext, true), RegionMiddleware(handlerContext))
