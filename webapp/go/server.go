@@ -19,12 +19,13 @@ type HandlerContext struct {
 	Notifications *notificationHub
 }
 
-// s1 (asia) は全リージョンの /api を処理するので 150。14:26 のベンチで s1 は 60 本を使い切って 70,100 回・1 回 0.4 秒の
-// 空き待ちが出たが、s4 の CPU は平均 36% で空いていた。s2・s3 は画像のキャッシュミスだけで同時 1 本しか使わない
-// (ベンチ中の最大 InUse=1) ので 10。s4 の max_connections は 200 (予約 3)。合計 170
+// s1 (asia) は全リージョンの /api を処理するので 60。150 にした 14:35 のベンチ (#58 のコメント) では、460KB の画像を
+// INSERT する投稿が同時に約 70 本走って WAL と BufferContent の待ちが増え、投稿の INSERT が 29ms → 252ms、通知の INSERT が
+// 13〜17 倍、投稿期間を開く API が 1.4〜4.1 秒になって、asia の人数が 766 → 349 に落ちた。s1 のプール待ちは s1 の CPU 詰まりの
+// 結果で、本数を増やしても DB が処理できる量は増えない。s2・s3 は画像のキャッシュミスだけで同時 1 本しか使わないので 10
 func dbPoolSize(region string) int {
 	if region == "asia" {
-		return 150
+		return 60
 	}
 	return 10
 }
