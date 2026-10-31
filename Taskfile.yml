@@ -183,6 +183,19 @@ tasks:
     cmds:
       - go tool pprof -http=0.0.0.0:1080 "http://localhost:6060/debug/pprof/profile?seconds=60"
 
+  pprof-save:
+    desc: 'ベンチ中に ssh 越しで実行 (対話なし): CPU プロファイルを /tmp/cpu.pprof、上位関数を /tmp/pprof.txt に保存。秒数は SEC=60'
+    cmds:
+      - curl -sf -o /tmp/cpu.pprof "http://localhost:6060/debug/pprof/profile?seconds={{.SEC | default 60}}"
+      # バイナリを渡すとシンボルが確実に解決される
+      - |
+        {
+          {{.GO}} tool pprof -top -nodecount=50 {{.APP_DIR}}/{{.APP_BIN}} /tmp/cpu.pprof
+          echo; echo '# cumulative'
+          {{.GO}} tool pprof -top -cum -nodecount=60 {{.APP_DIR}}/{{.APP_BIN}} /tmp/cpu.pprof
+        } > /tmp/pprof.txt 2>&1
+      - head -60 /tmp/pprof.txt
+
   score:
     desc: 'ポータルで結果を見てから: task score S=12345 M="メモ" → ~/scores.log に追記'
     requires:
