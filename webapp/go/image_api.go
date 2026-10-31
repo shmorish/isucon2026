@@ -56,7 +56,10 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
 		// 持っていなければ同じ問い合わせで data も読む
 		data, cached := imageDataCache.get(input.ImageID)
-		q := imageMetaQueries[!cached]
+		q := imageMetaQueryWithData
+		if cached {
+			q = imageMetaQueryMetaOnly
+		}
 		if createdAt, ok := imageCreatedAtCache.get(input.ImageID); ok {
 			err = h.DB.GetContext(ctx, &meta, q.byCreatedAt, input.ImageID, createdAt)
 		} else {
@@ -113,11 +116,10 @@ type imageMetaQuery struct{ byID, byCreatedAt string }
 // image_objects は created_at で分割されていて id だけだと全パーティションの主キーを引く。
 // 投稿の画像は created_at = posts.posted_at なので先にそれで1パーティションだけ引き、
 // 見つからないとき（RealMoji・プロフィール画像）だけ全パーティションを引く。
-// true のほうは data も読む
-var imageMetaQueries = map[bool]imageMetaQuery{
-	false: newImageMetaQuery(""),
-	true:  newImageMetaQuery("i.data, "),
-}
+var (
+	imageMetaQueryMetaOnly = newImageMetaQuery("")
+	imageMetaQueryWithData = newImageMetaQuery("i.data, ")
+)
 
 func newImageMetaQuery(cols string) imageMetaQuery {
 	imgCols := cols + "i.id, i.owner_user_id, i.media_type, i.created_at"
