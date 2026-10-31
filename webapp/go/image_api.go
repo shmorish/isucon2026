@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -56,8 +57,17 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 			Data          []byte    `db:"data"`
 		}
 		// 画像本体は作成後に変わらない（id は UUID で再利用されない）のでメモリに持つ。
-		// 持っていなければ同じ問い合わせで data も読む
-		data, cached := getImageData(input.ImageID)
+		// 持っていなければ同じ問い合わせで data も読む。s1 の nginx 経由でディスクに完全なファイルがあれば、
+		// 確認だけしてファイルの送信は nginx に任せる（#76）
+		accelPath, accel := "", fromLocalNginx(c.Request())
+		if accel {
+			accelPath, accel = imageAccelPath(input.ImageID)
+		}
+		var data []byte
+		cached := accel
+		if !accel {
+			data, cached = getImageData(input.ImageID)
+		}
 		q := imageMetaQueryWithData
 		if cached {
 			q = imageMetaQueryMetaOnly
@@ -103,6 +113,12 @@ func getImageHandler(h *HandlerContext) echo.HandlerFunc {
 		}
 		if exp <= time.Now().Unix() {
 			return NewAPIError(http.StatusForbidden, "image_forbidden")
+		}
+		if accel {
+			// Content-Type と Cache-Control は nginx がそのままクライアントに返す（s1 の isureal.conf の /_image_cache/）
+			c.Response().Header().Set(echo.HeaderContentType, meta.MediaType)
+			c.Response().Header().Set("X-Accel-Redirect", accelPath)
+			return c.NoContent(http.StatusOK)
 		}
 		return c.Blob(http.StatusOK, meta.MediaType, data)
 	}
@@ -216,6 +232,47 @@ func getImageData(id string) ([]byte, bool) {
 	return data, true
 }
 
+// X-Accel-Redirect は受け取った nginx が解釈する。ファイルがあるのは s1 だけで、s2・s3 の nginx は s1 の
+// アプリ (:8080) に直接転送してくるので、s1 の nginx が付ける X-Isureal-Image-Accel と、相手が同じマシンで
+// あることの両方を見る。s2・s3 経由ではクライアントが付けたヘッダーがそのまま届くが、送り元が s1 ではないので使われない
+func fromLocalNginx(r *http.Request) bool {
+	if r.Header.Get("X-Isureal-Image-Accel") != "1" {
+		return false
+	}
+	addr, err := netip.ParseAddrPort(r.RemoteAddr)
+	return err == nil && addr.Addr().IsLoopback()
+}
+
+// imageAccelPath は nginx に渡してよい画像ファイルの内部 URI を返す（s1 の isureal.conf の /_image_cache/）。
+// 本体を読まずに、先頭と末尾の 8 バイトだけで completeImage と同じ判定をする。
+// nginx (www-data) が読めない 0600 のファイル（#76 より前に書いたもの）はアプリが今までどおり返す
+func imageAccelPath(id string) (string, bool) {
+	path, ok := imageDiskPath(id)
+	if !ok {
+		return "", false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 {
+		return "", false
+	}
+	// PNG の先頭・末尾の印がどちらも 8 バイトなので、16 バイトあれば足りる
+	b := make([]byte, min(st.Size(), 16))
+	if len(b) < 16 {
+		_, err = f.ReadAt(b, 0)
+	} else if _, err = f.ReadAt(b[:8], 0); err == nil {
+		_, err = f.ReadAt(b[8:], st.Size()-8)
+	}
+	if err != nil || !completeImage(b) {
+		return "", false
+	}
+	return "/_image_cache/" + id[:2] + "/" + id, true
+}
+
 var (
 	jpegStart, jpegEnd = []byte{0xff, 0xd8}, []byte{0xff, 0xd9}
 	pngStart, pngEnd   = []byte("\x89PNG\r\n\x1a\n"), []byte("IEND\xaeB`\x82")
@@ -258,7 +315,11 @@ func writeImageFile(id string, data []byte) {
 	if err != nil {
 		return
 	}
-	_, err = tmp.Write(data)
+	// CreateTemp は 0600 で作る。nginx (www-data) が X-Accel-Redirect で読めるよう、rename の前に 0644 にする
+	err = tmp.Chmod(0o644)
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
