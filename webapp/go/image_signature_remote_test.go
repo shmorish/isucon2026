@@ -96,13 +96,19 @@ func TestPrefetchSmallBatchOnlyWhenBusy(t *testing.T) {
 		t.Fatal("a small batch must stay local while s1 is idle")
 	}
 	inflightRequests.Store(int64(imageSignBusyInflight))
+	// 混んでいても 7枚以下（ここでは 2枚＋プロフィール画像）は手元で計算する（#91）
 	prefetchImageSignatures(context.Background(), testImagesToSign(key, 2))
-	if calls.Load() != 1 {
-		t.Fatalf("a small batch must go remote while s1 is busy, got %d calls", calls.Load())
+	if calls.Load() != 0 {
+		t.Fatalf("fewer than %d images must stay local even while s1 is busy, got %d calls", imageSignaturePrefetchMinBusy, calls.Load())
 	}
-	assertSignedFromCache(t, key, time.Now().Add(imageURLLifetime).Unix(), "img-0", "img-1", "profile-32")
+	// 7枚＋プロフィール画像 = 8枚なら任せる
+	prefetchImageSignatures(context.Background(), testImagesToSign(key, 7))
+	if calls.Load() != 1 {
+		t.Fatalf("a batch of %d images must go remote while s1 is busy, got %d calls", imageSignaturePrefetchMinBusy, calls.Load())
+	}
+	assertSignedFromCache(t, key, time.Now().Add(imageURLLifetime).Unix(), "img-0", "img-6", "profile-32")
 	// 2回目は全部メモにあるので頼まない
-	prefetchImageSignatures(context.Background(), testImagesToSign(key, 2))
+	prefetchImageSignatures(context.Background(), testImagesToSign(key, 7))
 	if calls.Load() != 1 {
 		t.Fatal("cached signatures must not be requested again")
 	}
@@ -167,7 +173,7 @@ func TestStartPrefetchImageSignaturesWaits(t *testing.T) {
 	inflightRequests.Store(int64(imageSignBusyInflight))
 
 	key := bytes.Repeat([]byte{10}, 32)
-	wait := startPrefetchImageSignatures(context.Background(), testImagesToSign(key, 1))
+	wait := startPrefetchImageSignatures(context.Background(), testImagesToSign(key, 7))
 	wait()
 	wait() // 2回呼んでも戻る
 	if calls.Load() != 1 {
