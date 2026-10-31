@@ -2,8 +2,8 @@ package isureal
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,13 +14,7 @@ import (
 const ipBanReloadInterval = 200 * time.Millisecond
 
 type IPBanList struct {
-	reloading sync.Mutex
-	snapshot  atomic.Pointer[ipBanSnapshot]
-}
-
-type ipBanSnapshot struct {
-	loadedAt time.Time
-	bans     map[string]time.Time
+	bans atomic.Pointer[map[string]time.Time]
 }
 
 type ipBan struct {
@@ -28,25 +22,30 @@ type ipBan struct {
 	BannedUntil time.Time `db:"banned_until"`
 }
 
-func (l *IPBanList) Banned(ctx context.Context, db *sqlx.DB, ip string) (bool, error) {
-	snapshot := l.snapshot.Load()
-	if (snapshot == nil || time.Since(snapshot.loadedAt) >= ipBanReloadInterval) && l.reloading.TryLock() {
-		defer l.reloading.Unlock()
-		loaded, err := loadIPBans(ctx, db)
+// 200ms ごとに裏で ip_bans を読み直す。読めていない間・失敗した間は直前の一覧（初回は BAN なし）を使う
+func (l *IPBanList) run(db *sqlx.DB, logger *slog.Logger) {
+	ticker := time.NewTicker(ipBanReloadInterval)
+	defer ticker.Stop()
+	for ; ; <-ticker.C {
+		bans, err := loadIPBans(context.Background(), db)
 		if err != nil {
-			return false, err
+			logger.Error("failed to load ip bans", "error", err)
+			continue
 		}
-		l.snapshot.Store(loaded)
-		snapshot = loaded
+		l.bans.Store(&bans)
 	}
-	if snapshot == nil {
-		return false, nil
-	}
-	until, ok := snapshot.bans[ip]
-	return ok && time.Now().Before(until), nil
 }
 
-func loadIPBans(ctx context.Context, db *sqlx.DB) (*ipBanSnapshot, error) {
+func (l *IPBanList) Banned(ip string) bool {
+	bans := l.bans.Load()
+	if bans == nil {
+		return false
+	}
+	until, ok := (*bans)[ip]
+	return ok && time.Now().Before(until)
+}
+
+func loadIPBans(ctx context.Context, db *sqlx.DB) (map[string]time.Time, error) {
 	var rows []ipBan
 	if err := db.SelectContext(ctx, &rows, `SELECT ip, banned_until FROM ip_bans WHERE banned_until > clock_timestamp()`); err != nil {
 		return nil, err
@@ -55,7 +54,7 @@ func loadIPBans(ctx context.Context, db *sqlx.DB) (*ipBanSnapshot, error) {
 	for _, row := range rows {
 		bans[row.IP] = row.BannedUntil
 	}
-	return &ipBanSnapshot{loadedAt: time.Now(), bans: bans}, nil
+	return bans, nil
 }
 
 func extractClientIP(req *http.Request) string {
@@ -68,11 +67,7 @@ func extractClientIP(req *http.Request) string {
 func IPBanMiddleware(h *HandlerContext) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
-			banned, err := h.IPBans.Banned(c.Request().Context(), h.DB, c.RealIP())
-			if err != nil {
-				return err
-			}
-			if banned {
+			if h.IPBans.Banned(c.RealIP()) {
 				return NewAPIError(http.StatusForbidden, "ip_banned")
 			}
 			return next(c)

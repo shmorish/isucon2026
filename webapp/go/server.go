@@ -53,6 +53,7 @@ func NewServer(config *Config) *echo.Echo {
 	}
 	handlerContext.Notifications = newNotificationHub(db, e.Logger)
 	go handlerContext.Notifications.run()
+	go handlerContext.IPBans.run(db, e.Logger)
 	e.Use(IPBanMiddleware(handlerContext))
 
 	e.POST("/api/initialize", initializeHandler(handlerContext))
