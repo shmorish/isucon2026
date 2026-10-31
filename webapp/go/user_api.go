@@ -93,7 +93,7 @@ func registerHandler(h *HandlerContext) echo.HandlerFunc {
 			return err
 		}
 		// ユーザー名が一意である必要があります。
-		if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(2, hashtext($1))`, input.Username); err != nil {
 			return err
 		}
 		var exists bool
