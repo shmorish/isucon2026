@@ -157,7 +157,9 @@ var imageCreatedAtCache = newBoundedCache(imageCreatedAtCacheMaxEntries, func(ti
 // Go のヒープは画像の長さの約1.08倍（実際の投稿・RealMoji のサイズ分布で計測）。
 // 全消去直後は GOGC=100 だと最大で生存ヒープの2倍まで膨らむので、メモリ 3.8GB・swap なしでも
 // 収まるよう GC の目標を imageHeapMemoryLimit で頭打ちにする
-const imageDataCacheMaxBytes = 1 << 30
+// 画像本体はディスクにもある（#65）ので、メモリは 256MiB に抑えて OS のページキャッシュに回す（#71）。
+// 1GiB のときは s1 のページキャッシュが 1GB 前後しかなく、画像ファイルを読み直して iowait 7.8%・kswapd が出た
+const imageDataCacheMaxBytes = 256 << 20
 
 const imageHeapMemoryLimit = 2560 << 20
 
