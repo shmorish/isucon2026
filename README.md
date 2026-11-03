@@ -1,4 +1,24 @@
-# isucon-template
+# isucon2026
+
+ISUCON2026（2026-10-31）でチーム「山田組」が使ったリポジトリ。結果は141位。競技は終了しており、競技サーバーも止まっている。後半の「テンプレート」部分は当日に使った手順をそのまま残してある。
+
+## 題材と構成
+
+- 題材は ISUReal。写真共有 SNS で、投稿期間の開始通知を SSE で受けて投稿し、友達の投稿を見る。仕様の要点は `notes/manual.md`、原文は `notes/manual-full.md`
+- サーバーは4台で、リージョンをまたいでいる。リージョン間には遅延と帯域制限がある
+
+| repo 上の名前 | サーバー | 役割 |
+|---|---|---|
+| s1 | asia1 | nginx + Go（asia）。書き込み API はここに集めた |
+| s2 | europe1 | nginx + Go（europe） |
+| s3 | america1 | nginx + Go（america） |
+| s4 | asia2 | PostgreSQL 16（全リージョン共有） |
+
+- アプリは Go（`webapp/go/`）、DB は PostgreSQL。テンプレートは MySQL 前提だったので、当日の朝に PostgreSQL 用に直した（`task slp` は `scripts/pgslow.py`、`task pgstat` は pg_stat_statements、`task locks` はロック待ちを集計する）
+
+---
+
+# テンプレート（当日の手順）
 
 ISUCON 当日用テンプレート。repo は各サーバーの `/home/isucon` に置き、`.gitignore` のホワイトリストで必要なものだけ追跡する。
 
